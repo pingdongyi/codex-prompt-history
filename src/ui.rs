@@ -22,12 +22,14 @@ fn panel(title: impl Into<String>) -> Block<'static> {
         .title(Span::styled(title.into(), Style::default().fg(ACCENT)))
 }
 
-/// A single shared blank row separates adjacent items.
-fn spaced_item(mut lines: Vec<Line<'static>>) -> ListItem<'static> {
+/// Outer items share one blank row; children inside a tool group stay compact.
+fn spaced_item(mut lines: Vec<Line<'static>>, spacer: bool) -> ListItem<'static> {
     while lines.last().is_some_and(|line| line.width() == 0) {
         lines.pop();
     }
-    lines.push(Line::from(""));
+    if spacer {
+        lines.push(Line::from(""));
+    }
     ListItem::new(lines)
 }
 
@@ -166,10 +168,32 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         })
         .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
         .split(rows[3]);
+    let spacers: Vec<bool> = app
+        .visible
+        .iter()
+        .enumerate()
+        .map(|(position, &index)| {
+            if !app.query.is_empty() {
+                return true;
+            }
+            let group = app
+                .groups
+                .get_key_value(&index)
+                .or_else(|| app.groups.iter().find(|(_, range)| range.contains(&index)));
+            !group.is_some_and(|(id, range)| {
+                app.expanded_groups.contains(id)
+                    && app
+                        .visible
+                        .get(position + 1)
+                        .is_some_and(|next| range.contains(next))
+            })
+        })
+        .collect();
     let items: Vec<ListItem> = app
         .visible
         .iter()
-        .map(|&i| {
+        .enumerate()
+        .map(|(position, &i)| {
             if let Some(range) = app.groups.get(&i) {
                 let failures = app.history.entries[range.clone()]
                     .iter()
@@ -177,32 +201,35 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                         entry.text.starts_with("Failed") || entry.text.starts_with("FAILED")
                     })
                     .count();
-                return spaced_item(vec![
-                    Line::styled(
-                        format!(
-                            "{} Tool activity · {} entries{}",
-                            if app.expanded_groups.contains(&i) {
-                                "▾"
-                            } else {
-                                "▸"
-                            },
-                            range.len(),
-                            if failures > 0 {
-                                format!(" · {failures} failed")
-                            } else {
-                                String::new()
-                            }
+                return spaced_item(
+                    vec![
+                        Line::styled(
+                            format!(
+                                "{} Tool activity · {} entries{}",
+                                if app.expanded_groups.contains(&i) {
+                                    "▾"
+                                } else {
+                                    "▸"
+                                },
+                                range.len(),
+                                if failures > 0 {
+                                    format!(" · {failures} failed")
+                                } else {
+                                    String::new()
+                                }
+                            ),
+                            Style::default()
+                                .fg(if failures > 0 {
+                                    Color::Red
+                                } else {
+                                    Color::Yellow
+                                })
+                                .add_modifier(Modifier::BOLD),
                         ),
-                        Style::default()
-                            .fg(if failures > 0 {
-                                Color::Red
-                            } else {
-                                Color::Yellow
-                            })
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Line::from(""),
-                ]);
+                        Line::from(""),
+                    ],
+                    spacers[position],
+                );
             }
             let entry = &app.history.entries[i];
             if app.tool_collapsed(i) {
@@ -232,7 +259,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                         Color::Yellow
                     }),
                 )];
-                return spaced_item(lines);
+                return spaced_item(lines, spacers[position]);
             }
             let preview = display_text(
                 &entry
@@ -278,7 +305,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     preview
                 }),
             ];
-            spaced_item(lines)
+            spaced_item(lines, spacers[position])
         })
         .collect();
     let title = format!(
@@ -331,6 +358,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         // Keep one shared gap while giving the highlight balanced boundaries.
         if let Some(selected) = app.list.selected()
             && selected >= app.list.offset()
+            && spacers[selected]
         {
             let bottom = heights[app.list.offset()..=selected].iter().sum::<usize>();
             if bottom > 0 && bottom <= inner.height as usize {
@@ -581,6 +609,54 @@ mod tests {
     use super::*;
     use crate::history::{Entry, History};
     use ratatui::{Terminal, backend::TestBackend};
+    #[test]
+    fn grouped_tools_are_adjacent_and_selected_content_is_not_cleared() {
+        let mut app = App::from_session(crate::session::Session {
+            history: History {
+                entries: vec![
+                    Entry {
+                        session_id: "USER".into(),
+                        ts: 1,
+                        text: "hello".into(),
+                    },
+                    Entry {
+                        session_id: "TOOL · shell".into(),
+                        ts: 2,
+                        text: "Completed".into(),
+                    },
+                    Entry {
+                        session_id: "TOOL · search".into(),
+                        ts: 3,
+                        text: "Completed".into(),
+                    },
+                    Entry {
+                        session_id: "ASSISTANT".into(),
+                        ts: 4,
+                        text: "done".into(),
+                    },
+                ],
+                skipped: 0,
+            },
+            info: String::new(),
+            path: "demo".into(),
+        });
+        app.move_selection(1);
+        app.toggle_tool();
+        app.move_selection(1);
+        let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let rows: Vec<String> = terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(120)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .collect();
+        let row = |text: &str| rows.iter().position(|line| line.contains(text)).unwrap();
+        assert_eq!(row("shell · Completed"), row("Tool activity") + 1);
+        assert_eq!(row("search · Completed"), row("shell · Completed") + 1);
+        assert_eq!(row("ASSISTANT"), row("search · Completed") + 2);
+    }
     #[test]
     fn tool_details_are_hidden_until_expanded() {
         let mut app = App::new(History {

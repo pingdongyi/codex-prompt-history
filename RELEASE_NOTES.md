@@ -1,11 +1,11 @@
-## Codex Prompt History v0.4.5
+## Codex Prompt History v0.4.6
 
-A Rust terminal browser for Codex prompt history and session conversations.
+Tool activity groups now use tighter internal spacing while preserving the spacing around the outer conversation list.
 
-- Search prompts and session messages, filter sessions, and visualize 30-day activity.
-- Pair tool calls with their results and collapse consecutive tools into expandable groups.
-- Read structured tool output, completion status, and error details.
-- Use compact list spacing with content-aligned selection highlighting.
+- Remove blank rows between tool entries within expanded groups.
+- Preserve a single gap between groups and surrounding messages.
+- Keep selection highlighting aligned with content without erasing compact tool rows.
+- Add a rendering regression test for nested spacing and selected content visibility.
 
 ### Downloads
 
@@ -17,4 +17,4 @@ Extract the archive and run the executable in a terminal. Press `?` for keyboard
 
 ### Validation
 
-16 Rust tests, Clippy, formatting, and Linux interactive smoke checks pass. The Windows binary is cross-compiled; Windows runtime testing has not been performed.
+17 Rust tests, Clippy, formatting, and Linux interactive smoke checks pass. The Windows binary is cross-compiled; Windows runtime testing has not been performed.
