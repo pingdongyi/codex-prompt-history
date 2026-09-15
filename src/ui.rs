@@ -131,7 +131,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else {
         " Search · / to edit "
     };
-    let query = if app.query.is_empty() && !app.searching {
+    let placeholder = app.query.is_empty() && !app.searching;
+    let query = if placeholder {
         if transcript {
             "Search messages, tools, or roles…"
         } else {
@@ -155,8 +156,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .collect();
     frame.render_widget(
         Paragraph::new(query_tail)
-            .block(panel(search_title))
-            .style(Style::default().fg(if app.searching { ACCENT } else { Color::White })),
+            .block(
+                panel(search_title).border_style(Style::default().fg(if app.searching {
+                    ACCENT
+                } else {
+                    MUTED
+                })),
+            )
+            .style(Style::default().fg(if placeholder { MUTED } else { Color::Reset })),
         rows[2],
     );
 

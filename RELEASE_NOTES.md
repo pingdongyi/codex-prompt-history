@@ -1,11 +1,10 @@
-## Codex Prompt History v0.4.6
+## Codex Prompt History v0.4.7
 
-Tool activity groups now use tighter internal spacing while preserving the spacing around the outer conversation list.
+Search input now uses the terminal's default foreground color for readability across light and dark themes.
 
-- Remove blank rows between tool entries within expanded groups.
-- Preserve a single gap between groups and surrounding messages.
-- Keep selection highlighting aligned with content without erasing compact tool rows.
-- Add a rendering regression test for nested spacing and selected content visibility.
+- Keep typed text the same color while editing and after leaving the search field.
+- Render placeholder text in gray.
+- Highlight the border, rather than the text, while editing search.
 
 ### Downloads
 
