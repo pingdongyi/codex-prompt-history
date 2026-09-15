@@ -21,9 +21,9 @@ use std::{
     about = "Browse, search, and visualize your Codex prompt history"
 )]
 struct Args {
-    /// History JSONL file (defaults to ~/.codex/history.jsonl)
+    /// History JSONL file; repeat to merge files (default: ~/.codex/history.jsonl)
     #[arg(short, long)]
-    file: Option<PathBuf>,
+    file: Vec<PathBuf>,
     /// Start with a case-insensitive search
     #[arg(short, long, default_value = "")]
     query: String,
@@ -34,28 +34,31 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let path = match args.file {
-        Some(path) => path,
-        None => PathBuf::from(
-            std::env::var_os("HOME")
-                .or_else(|| std::env::var_os("USERPROFILE"))
-                .context("Home directory unavailable; specify --file PATH")?,
-        )
-        .join(".codex/history.jsonl"),
+    let paths = if args.file.is_empty() {
+        vec![
+            PathBuf::from(
+                std::env::var_os("HOME")
+                    .or_else(|| std::env::var_os("USERPROFILE"))
+                    .context("Home directory unavailable; specify --file PATH")?,
+            )
+            .join(".codex/history.jsonl"),
+        ]
+    } else {
+        args.file
     };
-    let mut app = App::new(History::load(&path)?);
+    let mut app = App::new(History::load_many(&paths)?);
     app.query = args.query;
     app.filter();
-    let sessions_dir = args.sessions_dir.unwrap_or_else(|| {
-        path.parent()
-            .unwrap_or(std::path::Path::new("."))
-            .join("sessions")
-    });
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!("An interactive terminal is required. Run codex-prompt-history in a terminal.");
     }
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, &mut app, &path, &sessions_dir);
+    let result = run(
+        &mut terminal,
+        &mut app,
+        &paths,
+        args.sessions_dir.as_deref(),
+    );
     ratatui::restore();
     result
 }
@@ -63,8 +66,8 @@ fn main() -> Result<()> {
 fn run(
     terminal: &mut ratatui::DefaultTerminal,
     root: &mut App,
-    path: &std::path::Path,
-    sessions_dir: &std::path::Path,
+    paths: &[PathBuf],
+    sessions_dir: Option<&std::path::Path>,
 ) -> Result<()> {
     loop {
         terminal.draw(|frame| match root.transcript.as_deref_mut() {
@@ -95,7 +98,8 @@ fn run(
         if key.code == KeyCode::Enter && root.transcript.is_none() && !root.searching && !root.help
         {
             if let Some(entry) = root.selected() {
-                match session::find(sessions_dir, &entry.session_id)
+                let directory = session_directory(entry, sessions_dir);
+                match session::find(&directory, &entry.session_id)
                     .and_then(|path| session::Session::load(&path))
                 {
                     Ok(session) => root.transcript = Some(Box::new(App::from_session(session))),
@@ -145,6 +149,7 @@ fn run(
             KeyCode::Esc => {
                 app.query.clear();
                 app.session = None;
+                app.session_origin = None;
                 app.filter();
             }
             KeyCode::Char('j') | KeyCode::Down => app.move_selection(1),
@@ -174,7 +179,7 @@ fn run(
                     Err(error) => app.status = format!("Reload failed: {error}"),
                 }
             }
-            KeyCode::Char('r') => match History::load(path) {
+            KeyCode::Char('r') => match History::load_many(paths) {
                 Ok(history) => {
                     app.history = history;
                     app.filter();
@@ -186,4 +191,50 @@ fn run(
         }
     }
     Ok(())
+}
+
+fn session_directory(entry: &history::Entry, override_dir: Option<&std::path::Path>) -> PathBuf {
+    override_dir
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| {
+            entry
+                .source
+                .as_deref()
+                .and_then(std::path::Path::parent)
+                .unwrap_or(std::path::Path::new("."))
+                .join("sessions")
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn multi_file_is_opt_in_and_sessions_follow_the_source() {
+        assert!(Args::parse_from(["history"]).file.is_empty());
+        let args = Args::parse_from([
+            "history",
+            "--file",
+            ".codex/history.jsonl",
+            "--file",
+            ".codex-beta/history.jsonl",
+            "--file",
+            ".codex-alpha/history.jsonl",
+        ]);
+        assert_eq!(args.file.len(), 3);
+        let entry = history::Entry {
+            source: Some(args.file[1].clone()),
+            session_id: "same".into(),
+            ts: 0,
+            text: String::new(),
+        };
+        assert_eq!(
+            session_directory(&entry, None),
+            PathBuf::from(".codex-beta/sessions")
+        );
+        assert_eq!(
+            session_directory(&entry, Some(std::path::Path::new("custom"))),
+            PathBuf::from("custom")
+        );
+    }
 }

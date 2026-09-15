@@ -172,6 +172,7 @@ impl Session {
                         _ => continue,
                     };
                     history.entries.push(Entry {
+                        source: None,
                         session_id: role,
                         ts,
                         text,
@@ -184,6 +185,7 @@ impl Session {
                         _ => continue,
                     };
                     fallback.push(Entry {
+                        source: None,
                         session_id: role.into(),
                         ts,
                         text: string(p, "message"),

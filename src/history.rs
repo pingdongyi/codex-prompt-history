@@ -3,11 +3,13 @@ use serde::Deserialize;
 use std::{
     fs::File,
     io::{BufRead, BufReader},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 #[derive(Debug, Deserialize)]
 pub struct Entry {
+    #[serde(skip)]
+    pub source: Option<PathBuf>,
     pub session_id: String,
     pub ts: i64,
     pub text: String,
@@ -22,7 +24,31 @@ pub struct History {
 impl History {
     pub fn load(path: &Path) -> Result<Self> {
         let file = File::open(path).with_context(|| format!("Cannot open {}", path.display()))?;
-        Self::parse(BufReader::new(file))
+        let mut history = Self::parse(BufReader::new(file))?;
+        for entry in &mut history.entries {
+            entry.source = Some(path.to_path_buf());
+        }
+        Ok(history)
+    }
+
+    pub fn load_many(paths: &[PathBuf]) -> Result<Self> {
+        let mut merged = Self::default();
+        let mut seen = std::collections::HashSet::new();
+        for path in paths {
+            let canonical = path
+                .canonicalize()
+                .with_context(|| format!("Cannot open {}", path.display()))?;
+            if !seen.insert(canonical.clone()) {
+                continue;
+            }
+            let history = Self::load(&canonical)?;
+            merged.entries.extend(history.entries);
+            merged.skipped += history.skipped;
+        }
+        merged
+            .entries
+            .sort_by_key(|entry| std::cmp::Reverse(entry.ts));
+        Ok(merged)
     }
 
     fn parse(reader: impl BufRead) -> Result<Self> {
@@ -65,6 +91,49 @@ pub fn display_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn merges_files_without_duplicate_sources_and_preserves_origins() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-history-sources-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let a = root.join("a.jsonl");
+        let b = root.join("b.jsonl");
+        std::fs::write(
+            &a,
+            "{\"session_id\":\"same\",\"ts\":1,\"text\":\"one\"}\nbad\n",
+        )
+        .unwrap();
+        std::fs::write(&b, "{\"session_id\":\"same\",\"ts\":2,\"text\":\"two\"}\n").unwrap();
+        let history = History::load_many(&[a.clone(), b.clone(), a.clone()]).unwrap();
+        assert_eq!(history.entries.len(), 2);
+        assert_eq!(history.skipped, 1);
+        assert_eq!(history.entries[0].text, "two");
+        assert_eq!(
+            history.entries[0].source.as_ref(),
+            Some(&b.canonicalize().unwrap())
+        );
+        assert_eq!(
+            history.entries[1].source.as_ref(),
+            Some(&a.canonicalize().unwrap())
+        );
+        std::fs::write(
+            &b,
+            "{\"session_id\":\"same\",\"ts\":3,\"text\":\"updated\"}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            History::load_many(&[a.clone(), b.clone()]).unwrap().entries[0].text,
+            "updated"
+        );
+        assert!(History::load_many(&[a, root.join("missing")]).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn reads_unicode_skips_bad_records_and_sorts() {
         let input = "{\"session_id\":\"a\",\"ts\":1,\"text\":\"你好\\nworld\"}\ninvalid\n\n{\"session_id\":\"b\",\"ts\":3,\"text\":\"new\",\"extra\":true}\n{\"ts\":4}";

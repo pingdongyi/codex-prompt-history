@@ -8,6 +8,7 @@ pub struct App {
     pub query: String,
     pub searching: bool,
     pub session: Option<String>,
+    pub session_origin: Option<std::path::PathBuf>,
     pub oldest_first: bool,
     pub scroll: usize,
     pub help: bool,
@@ -29,6 +30,7 @@ impl App {
             query: String::new(),
             searching: false,
             session: None,
+            session_origin: None,
             oldest_first: false,
             scroll: 0,
             help: false,
@@ -117,20 +119,19 @@ impl App {
 
     pub fn filter(&mut self) {
         let query = self.query.to_lowercase();
-        self.visible = self
-            .history
-            .entries
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| {
-                self.session
-                    .as_ref()
-                    .is_none_or(|id| *id == entry.session_id)
-                    && (entry.text.to_lowercase().contains(&query)
+        self.visible =
+            self.history
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| {
+                    self.session.as_ref().is_none_or(|id| {
+                        *id == entry.session_id && self.session_origin == entry.source
+                    }) && (entry.text.to_lowercase().contains(&query)
                         || entry.session_id.to_lowercase().contains(&query))
-            })
-            .map(|(i, _)| i)
-            .collect();
+                })
+                .map(|(i, _)| i)
+                .collect();
         if self.oldest_first {
             self.visible.reverse();
         }
@@ -192,11 +193,14 @@ impl App {
     }
 
     pub fn toggle_session(&mut self) {
-        self.session = if self.session.is_some() {
-            None
-        } else {
-            self.selected().map(|e| e.session_id.clone())
-        };
+        if self.session.is_some() {
+            self.session = None;
+            self.session_origin = None;
+        } else if let Some(entry) = self.selected() {
+            let (id, source) = (entry.session_id.clone(), entry.source.clone());
+            self.session = Some(id);
+            self.session_origin = source;
+        }
         self.filter();
     }
 }
@@ -209,25 +213,39 @@ pub fn is_tool(entry: &Entry) -> bool {
 mod tests {
     use super::*;
     #[test]
+    fn session_filter_keeps_sources_separate() {
+        let mut a = app();
+        a.history.entries[0].source = Some(".codex/history.jsonl".into());
+        a.history.entries[2].source = Some(".codex-beta/history.jsonl".into());
+        a.toggle_session();
+        assert_eq!(a.visible, vec![0]);
+        a.toggle_session();
+        assert_eq!(a.visible, vec![0, 1, 2]);
+    }
+    #[test]
     fn groups_tools_with_nested_folding_search_and_reverse_order() {
         let mut a = App::new(History {
             entries: vec![
                 Entry {
+                    source: None,
                     session_id: "USER".into(),
                     ts: 1,
                     text: "hello".into(),
                 },
                 Entry {
+                    source: None,
                     session_id: "TOOL · shell".into(),
                     ts: 2,
                     text: "Completed\nneedle".into(),
                 },
                 Entry {
+                    source: None,
                     session_id: "TOOL · search".into(),
                     ts: 3,
                     text: "Failed\noutput".into(),
                 },
                 Entry {
+                    source: None,
                     session_id: "ASSISTANT".into(),
                     ts: 4,
                     text: "done".into(),
@@ -265,16 +283,19 @@ mod tests {
         App::new(History {
             entries: vec![
                 Entry {
+                    source: None,
                     session_id: "a".into(),
                     ts: 3,
                     text: "RUST 世界".into(),
                 },
                 Entry {
+                    source: None,
                     session_id: "b".into(),
                     ts: 2,
                     text: "other".into(),
                 },
                 Entry {
+                    source: None,
                     session_id: "a".into(),
                     ts: 1,
                     text: "rust again".into(),

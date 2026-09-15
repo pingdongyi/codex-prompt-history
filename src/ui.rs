@@ -56,7 +56,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .history
         .entries
         .iter()
-        .map(|e| &e.session_id)
+        .map(|e| (&e.source, &e.session_id))
         .collect::<HashSet<_>>()
         .len();
     frame.render_widget(
@@ -196,6 +196,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             })
         })
         .collect();
+    let multiple_sources = app
+        .history
+        .entries
+        .iter()
+        .filter_map(|entry| entry.source.as_ref())
+        .collect::<HashSet<_>>()
+        .len()
+        > 1;
     let items: Vec<ListItem> = app
         .visible
         .iter()
@@ -281,7 +289,21 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             let session: String = if transcript {
                 entry.session_id.clone()
             } else {
-                entry.session_id.chars().take(8).collect()
+                let id: String = entry.session_id.chars().take(8).collect();
+                if multiple_sources {
+                    format!(
+                        "{} · {id}",
+                        entry
+                            .source
+                            .as_deref()
+                            .and_then(std::path::Path::parent)
+                            .and_then(std::path::Path::file_name)
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                    )
+                } else {
+                    id
+                }
             };
             let lines = vec![
                 Line::from(Span::styled(
@@ -410,6 +432,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             );
         }
     } else if let Some(entry) = app.selected() {
+        if multiple_sources && let Some(source) = &entry.source {
+            lines.extend(
+                textwrap::wrap(
+                    &format!("Source: {}", display_text(&source.display().to_string())),
+                    width,
+                )
+                .into_iter()
+                .map(|line| Line::styled(line.into_owned(), Style::default().fg(MUTED))),
+            );
+        }
         lines.push(Line::styled(
             timestamp(entry.ts),
             Style::default().fg(ACCENT),
@@ -622,21 +654,25 @@ mod tests {
             history: History {
                 entries: vec![
                     Entry {
+                        source: None,
                         session_id: "USER".into(),
                         ts: 1,
                         text: "hello".into(),
                     },
                     Entry {
+                        source: None,
                         session_id: "TOOL · shell".into(),
                         ts: 2,
                         text: "Completed".into(),
                     },
                     Entry {
+                        source: None,
                         session_id: "TOOL · search".into(),
                         ts: 3,
                         text: "Completed".into(),
                     },
                     Entry {
+                        source: None,
                         session_id: "ASSISTANT".into(),
                         ts: 4,
                         text: "done".into(),
@@ -668,6 +704,7 @@ mod tests {
     fn tool_details_are_hidden_until_expanded() {
         let mut app = App::new(History {
             entries: vec![Entry {
+                source: None,
                 session_id: "TOOL · shell".into(),
                 ts: 1,
                 text: crate::formatting::typeset(r#"{"command":"echo hello\nwhoami"}"#),
@@ -718,6 +755,7 @@ mod tests {
                 "Please resize"
             }));
             app.history.entries.push(Entry {
+                source: None,
                 session_id: "世界".into(),
                 ts: i64::MAX,
                 text: "你好\nRust 🦀\n".repeat(100),

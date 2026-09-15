@@ -10,6 +10,11 @@ Install a current stable [Rust toolchain](https://rustup.rs), then:
 cargo run --release
 # Use a different file or start with a search:
 cargo run --release -- --file /path/to/history.jsonl --query rust
+# Explicitly combine multiple histories (the default still reads only ~/.codex):
+cargo run --release -- \
+  --file ~/.codex/history.jsonl \
+  --file ~/.codex-beta/history.jsonl \
+  --file ~/.codex-alpha/history.jsonl
 # Install the executable:
 cargo install --path .
 codex-prompt-history
@@ -64,6 +69,8 @@ Archives and `SHA256SUMS` are written to `dist/`. Verify downloads on Linux with
 | `q` / `Ctrl+C` | Quit |
 
 The activity chart follows the current filters. Search matches literal substrings in prompt text or session IDs. Reload is manual; a failed reload preserves the current data. The app only reads history and never writes it or sends it anywhere.
+
+Repeat `--file` to merge histories in timestamp order. Without `--file`, only `~/.codex/history.jsonl` is loaded; other directories are never discovered automatically. Multi-file views label each prompt's source. Session filtering distinguishes identical session IDs from different files, and `Enter` opens the source file's sibling `sessions` directory. `--sessions-dir` explicitly overrides that directory for all sources. Repeating the same file loads it once. Every requested file must be readable; reload (`r`) refreshes all sources together and preserves the current data if any file cannot be read.
 
 ## Session history
 
