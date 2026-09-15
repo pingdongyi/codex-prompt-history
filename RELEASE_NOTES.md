@@ -1,19 +1,11 @@
-## Codex Prompt History v0.5.0
+## Codex Prompt History v0.5.1
 
-Browse multiple Codex history files together by repeating `--file`. The default remains `~/.codex/history.jsonl` only.
+Toggling the session filter with `s` now keeps the currently selected prompt instead of jumping to the first entry.
 
-```sh
-codex-prompt-history \
-  --file ~/.codex/history.jsonl \
-  --file ~/.codex-beta/history.jsonl \
-  --file ~/.codex-alpha/history.jsonl
-```
-
-- Merge records in memory in timestamp order without writing a merged file or modifying source histories.
-- Show each prompt's source and open sessions from that history file's sibling `sessions` directory.
-- Keep identical session IDs from different sources separate when filtering.
-- Load repeated file paths once and reload all requested sources together; failed reloads preserve current data.
-- Preserve the existing explicit `--sessions-dir` override.
+- Preserve selection when enabling and disabling the session filter.
+- Retain the prompt preview's scroll position and the selection's relative list position where possible.
+- Preserve the current selection after navigating within a filtered session.
+- Add regression coverage for filter toggling with search and reversed ordering.
 
 ### Downloads
 
@@ -25,4 +17,4 @@ Extract the archive and run the executable in a terminal. Press `?` for keyboard
 
 ### Validation
 
-20 Rust tests, Clippy, formatting, and Linux interactive smoke checks pass. A three-source interactive check verified session routing with identical IDs and unchanged source files. The Windows binary is cross-compiled; Windows runtime testing has not been performed.
+21 Rust tests, Clippy, formatting, and Linux interactive smoke checks pass. The Windows binary is cross-compiled; Windows runtime testing has not been performed.

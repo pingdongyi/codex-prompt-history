@@ -193,6 +193,17 @@ impl App {
     }
 
     pub fn toggle_session(&mut self) {
+        let selected = self
+            .list
+            .selected()
+            .and_then(|position| self.visible.get(position))
+            .copied();
+        let row = self
+            .list
+            .selected()
+            .unwrap_or(0)
+            .saturating_sub(self.list.offset());
+        let scroll = self.scroll;
         if self.session.is_some() {
             self.session = None;
             self.session_origin = None;
@@ -202,6 +213,13 @@ impl App {
             self.session_origin = source;
         }
         self.filter();
+        if let Some(position) =
+            selected.and_then(|index| self.visible.iter().position(|&i| i == index))
+        {
+            self.list.select(Some(position));
+            *self.list.offset_mut() = position.saturating_sub(row);
+            self.scroll = scroll;
+        }
     }
 }
 
@@ -212,6 +230,32 @@ pub fn is_tool(entry: &Entry) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn session_toggle_preserves_the_selected_record_in_both_directions() {
+        let mut a = app();
+        a.move_selection(2);
+        a.scroll = 3;
+        a.toggle_session();
+        assert_eq!(a.visible, vec![0, 2]);
+        assert_eq!(a.list.selected(), Some(1));
+        assert_eq!(a.scroll, 3);
+        a.toggle_session();
+        assert_eq!(a.list.selected(), Some(2));
+        assert_eq!(a.selected().unwrap().ts, 1);
+        // Preserve the current record even after moving within the filtered list.
+        a.toggle_session();
+        a.move_selection(-1);
+        a.toggle_session();
+        assert_eq!(a.list.selected(), Some(0));
+        a.query = "rust".into();
+        a.oldest_first = true;
+        a.filter();
+        a.move_selection(1);
+        a.toggle_session();
+        a.toggle_session();
+        assert_eq!(a.list.selected(), Some(1));
+        assert_eq!(a.selected().unwrap().ts, 3);
+    }
     #[test]
     fn session_filter_keeps_sources_separate() {
         let mut a = app();
