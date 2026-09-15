@@ -1,0 +1,189 @@
+mod app;
+mod formatting;
+mod history;
+mod session;
+mod ui;
+
+use anyhow::{Context, Result, bail};
+use app::App;
+use clap::Parser;
+use history::History;
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use std::{
+    io::{self, IsTerminal},
+    path::PathBuf,
+    time::Duration,
+};
+
+#[derive(Parser)]
+#[command(
+    version,
+    about = "Browse, search, and visualize your Codex prompt history"
+)]
+struct Args {
+    /// History JSONL file (defaults to ~/.codex/history.jsonl)
+    #[arg(short, long)]
+    file: Option<PathBuf>,
+    /// Start with a case-insensitive search
+    #[arg(short, long, default_value = "")]
+    query: String,
+    /// Session log directory (defaults to sessions beside the history file)
+    #[arg(long)]
+    sessions_dir: Option<PathBuf>,
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+    let path = match args.file {
+        Some(path) => path,
+        None => PathBuf::from(
+            std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .context("Home directory unavailable; specify --file PATH")?,
+        )
+        .join(".codex/history.jsonl"),
+    };
+    let mut app = App::new(History::load(&path)?);
+    app.query = args.query;
+    app.filter();
+    let sessions_dir = args.sessions_dir.unwrap_or_else(|| {
+        path.parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("sessions")
+    });
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        bail!("An interactive terminal is required. Run codex-prompt-history in a terminal.");
+    }
+    let mut terminal = ratatui::init();
+    let result = run(&mut terminal, &mut app, &path, &sessions_dir);
+    ratatui::restore();
+    result
+}
+
+fn run(
+    terminal: &mut ratatui::DefaultTerminal,
+    root: &mut App,
+    path: &std::path::Path,
+    sessions_dir: &std::path::Path,
+) -> Result<()> {
+    loop {
+        terminal.draw(|frame| match root.transcript.as_deref_mut() {
+            Some(app) => ui::draw(frame, app),
+            None => ui::draw(frame, root),
+        })?;
+        if !event::poll(Duration::from_millis(200))? {
+            continue;
+        }
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        if key.kind == KeyEventKind::Release {
+            continue;
+        }
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            break;
+        }
+        if key.code == KeyCode::Esc
+            && root
+                .transcript
+                .as_ref()
+                .is_some_and(|app| !app.searching && !app.help)
+        {
+            root.transcript = None;
+            continue;
+        }
+        if key.code == KeyCode::Enter && root.transcript.is_none() && !root.searching && !root.help
+        {
+            if let Some(entry) = root.selected() {
+                match session::find(sessions_dir, &entry.session_id)
+                    .and_then(|path| session::Session::load(&path))
+                {
+                    Ok(session) => root.transcript = Some(Box::new(App::from_session(session))),
+                    Err(error) => root.status = format!("Cannot open session: {error}"),
+                }
+            }
+            continue;
+        }
+        let app = match root.transcript.as_deref_mut() {
+            Some(app) => app,
+            None => root,
+        };
+        if app.help {
+            app.help = false;
+            continue;
+        }
+        if app.searching {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter => app.searching = false,
+                KeyCode::Backspace => {
+                    app.query.pop();
+                    app.filter();
+                }
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.query.clear();
+                    app.filter();
+                }
+                KeyCode::Char(c)
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    app.query.push(c);
+                    app.filter();
+                }
+                _ => {}
+            }
+            continue;
+        }
+        match key.code {
+            KeyCode::Char('c') if app.session_source.is_some() => app.collapse_groups(),
+            KeyCode::Enter | KeyCode::Char(' ') if app.session_source.is_some() => {
+                app.toggle_tool()
+            }
+            KeyCode::Char('q') => break,
+            KeyCode::Char('/') => app.searching = true,
+            KeyCode::Esc => {
+                app.query.clear();
+                app.session = None;
+                app.filter();
+            }
+            KeyCode::Char('j') | KeyCode::Down => app.move_selection(1),
+            KeyCode::Char('k') | KeyCode::Up => app.move_selection(-1),
+            KeyCode::Char('g') | KeyCode::Home => app.move_selection(isize::MIN),
+            KeyCode::Char('G') | KeyCode::End => app.move_selection(isize::MAX),
+            KeyCode::PageDown => app.move_selection(10),
+            KeyCode::PageUp => app.move_selection(-10),
+            KeyCode::Char('J') | KeyCode::Right => app.scroll = app.scroll.saturating_add(3),
+            KeyCode::Char('K') | KeyCode::Left => app.scroll = app.scroll.saturating_sub(3),
+            KeyCode::Char('s') if app.session_source.is_none() => app.toggle_session(),
+            KeyCode::Char('o') => {
+                app.oldest_first = !app.oldest_first;
+                app.filter();
+            }
+            KeyCode::Char('?') => app.help = true,
+            KeyCode::Char('r') if app.session_source.is_some() => {
+                match session::Session::load(app.session_source.as_ref().unwrap()) {
+                    Ok(session) => {
+                        app.expanded_tools.clear();
+                        app.expanded_groups.clear();
+                        app.history = session.history;
+                        app.session_info = session.info;
+                        app.filter();
+                        app.status = "Session reloaded".into();
+                    }
+                    Err(error) => app.status = format!("Reload failed: {error}"),
+                }
+            }
+            KeyCode::Char('r') => match History::load(path) {
+                Ok(history) => {
+                    app.history = history;
+                    app.filter();
+                    app.status = "History reloaded".into();
+                }
+                Err(error) => app.status = format!("Reload failed: {error}"),
+            },
+            _ => {}
+        }
+    }
+    Ok(())
+}
