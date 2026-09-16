@@ -302,7 +302,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             let group = app
                 .groups
                 .get_key_value(&index)
-                .or_else(|| app.groups.iter().find(|(_, range)| range.contains(&index)));
+                .or_else(|| app.group_for_entry(index));
             !group.is_some_and(|(id, range)| {
                 app.expanded_groups.contains(id)
                     && app
@@ -463,7 +463,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     );
     if items.is_empty() {
         frame.render_widget(
-            Paragraph::new(if transcript {
+            Paragraph::new(if app.loading {
+                "Loading records in the background…\nEsc cancels · q quits"
+            } else if transcript {
                 "No matching session entries.\n/ edits search · r reloads · Esc back"
             } else {
                 "No matching prompts.\nEsc clears filters · r reloads"
@@ -678,7 +680,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             } else {
                 " a dates  w range  d clear date  Tab focus  / search  s session  t source  ? help  q quit"
             }),
-            Line::styled(display_text(&app.status), Style::default().fg(MUTED)),
+            Line::styled(display_text(&app.status), Style::default().fg(if app.loading { ACCENT } else { MUTED })),
         ]),
         rows[5],
     );
@@ -689,7 +691,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
 fn help(frame: &mut Frame, area: Rect, transcript: bool) {
     let width = area.width.min(64);
-    let height = area.height.min(27);
+    let height = area.height.min(28);
     let popup = Rect::new(
         (area.width - width) / 2,
         (area.height - height) / 2,
@@ -745,6 +747,7 @@ fn help(frame: &mut Frame, area: Rect, transcript: bool) {
                 "Clear search, session, date, source"
             },
         ),
+        ("Esc (loading)", "Cancel background load"),
         ("q / Ctrl+C", "Quit"),
     ];
     let key_width = shortcuts

@@ -2,6 +2,7 @@ mod activity;
 mod app;
 mod formatting;
 mod history;
+mod loader;
 mod session;
 mod tool_summary;
 mod ui;
@@ -48,18 +49,21 @@ fn main() -> Result<()> {
     } else {
         args.file
     };
-    let mut app = App::new(History::load_many(&paths)?);
+    let mut app = App::new(History::default());
     app.query = args.query;
     app.filter();
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!("An interactive terminal is required. Run codex-prompt-history in a terminal.");
     }
+    let mut loader = loader::Loader::new()?;
+    start_load(&mut app, &mut loader, loader::Job::History(paths.clone()));
     let mut terminal = ratatui::init();
     let result = run(
         &mut terminal,
         &mut app,
         &paths,
         args.sessions_dir.as_deref(),
+        &mut loader,
     );
     ratatui::restore();
     result
@@ -70,8 +74,10 @@ fn run(
     root: &mut App,
     paths: &[PathBuf],
     sessions_dir: Option<&std::path::Path>,
+    loader: &mut loader::Loader,
 ) -> Result<()> {
     loop {
+        apply_load_events(root, loader);
         terminal.draw(|frame| match root.transcript.as_deref_mut() {
             Some(app) => ui::draw(frame, app),
             None => ui::draw(frame, root),
@@ -94,6 +100,13 @@ fn run(
                 None => &mut *root,
             };
             if !current.searching && !current.help {
+                if loader.pending.is_some() {
+                    loader.cancel();
+                    current.loading = false;
+                    current.status = "Loading cancelled".into();
+                    root.loading = false;
+                    continue;
+                }
                 if current.focus == app::Focus::Activity {
                     current.focus = app::Focus::List;
                     continue;
@@ -115,13 +128,19 @@ fn run(
             }
             if let Some(entry) = root.selected() {
                 let directory = session_directory(entry, sessions_dir);
-                match session::find(&directory, &entry.session_id)
-                    .and_then(|path| session::Session::load(&path))
-                {
-                    Ok(session) => root.transcript = Some(Box::new(App::from_session(session))),
-                    Err(error) => root.status = format!("Cannot open session: {error}"),
-                }
+                let id = entry.session_id.clone();
+                start_load(root, loader, loader::Job::OpenSession { directory, id });
             }
+            continue;
+        }
+        let ready_for_reload = root.transcript.as_deref().unwrap_or(root);
+        if key.code == KeyCode::Char('r') && !ready_for_reload.searching && !ready_for_reload.help {
+            let job = if let Some(path) = &ready_for_reload.session_source {
+                loader::Job::ReloadSession(path.clone())
+            } else {
+                loader::Job::History(paths.to_vec())
+            };
+            start_load(root, loader, job);
             continue;
         }
         let app = match root.transcript.as_deref_mut() {
@@ -193,27 +212,96 @@ fn run(
                 app.filter();
             }
             KeyCode::Char('?') => app.help = true,
-            KeyCode::Char('r') if app.session_source.is_some() => {
-                match session::Session::load(app.session_source.as_ref().unwrap()) {
-                    Ok(session) => {
-                        app.replace_history(session.history);
-                        app.session_info = session.info;
-                        app.status = "Session reloaded".into();
-                    }
-                    Err(error) => app.status = format!("Reload failed: {error}"),
-                }
-            }
-            KeyCode::Char('r') => match History::load_many(paths) {
-                Ok(history) => {
-                    app.replace_history(history);
-                    app.status = "History reloaded".into();
-                }
-                Err(error) => app.status = format!("Reload failed: {error}"),
-            },
             _ => {}
         }
     }
     Ok(())
+}
+
+fn start_load(root: &mut App, loader: &mut loader::Loader, job: loader::Job) {
+    let target = job.target();
+    root.loading = false;
+    if let Some(app) = root.transcript.as_deref_mut() {
+        app.loading = false;
+    }
+    let result = loader.start(job);
+    let app = if target == loader::Target::ReloadSession {
+        root.transcript
+            .as_deref_mut()
+            .expect("reload requires a session")
+    } else {
+        root
+    };
+    match result {
+        Ok(()) => {
+            app.loading = true;
+            app.status = "Loading… Esc cancels · existing view stays usable".into();
+        }
+        Err(error) => app.status = format!("Load failed: {error:#}"),
+    }
+}
+
+fn apply_load_events(root: &mut App, loader: &mut loader::Loader) {
+    while let Some(event) = loader.poll() {
+        match event {
+            loader::Event::Progress { target, message } => {
+                let app = if target == loader::Target::ReloadSession {
+                    root.transcript.as_deref_mut()
+                } else {
+                    Some(&mut *root)
+                };
+                if let Some(app) = app {
+                    app.status = message;
+                }
+            }
+            loader::Event::Finished { target, result } => {
+                root.loading = false;
+                if let Some(app) = root.transcript.as_deref_mut() {
+                    app.loading = false;
+                }
+                match result {
+                    Ok(loader::Loaded::History(history)) => {
+                        root.replace_history(history);
+                        root.status = "History reloaded".into();
+                    }
+                    Ok(loader::Loaded::Session { session, cached })
+                        if target == loader::Target::OpenSession =>
+                    {
+                        let mut app = App::from_session(session);
+                        app.status = if cached {
+                            "Session loaded from memory cache"
+                        } else {
+                            "Session loaded"
+                        }
+                        .into();
+                        root.transcript = Some(Box::new(app));
+                        root.status.clear();
+                    }
+                    Ok(loader::Loaded::Session { session, .. }) => {
+                        if let Some(app) = root
+                            .transcript
+                            .as_deref_mut()
+                            .filter(|app| app.session_source.as_ref() == Some(&session.path))
+                        {
+                            app.replace_history(session.history);
+                            app.session_info = session.info;
+                            app.status = "Session reloaded".into();
+                        }
+                    }
+                    Err(error) => {
+                        let app = if target == loader::Target::ReloadSession {
+                            root.transcript.as_deref_mut()
+                        } else {
+                            Some(&mut *root)
+                        };
+                        if let Some(app) = app {
+                            app.status = format!("Load failed: {error}");
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn session_directory(entry: &history::Entry, override_dir: Option<&std::path::Path>) -> PathBuf {

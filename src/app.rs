@@ -31,6 +31,7 @@ pub struct App {
     pub scroll: usize,
     pub help: bool,
     pub status: String,
+    pub loading: bool,
     pub transcript: Option<Box<App>>,
     pub session_source: Option<std::path::PathBuf>,
     pub session_info: String,
@@ -63,6 +64,7 @@ impl App {
             scroll: 0,
             help: false,
             status: String::new(),
+            loading: false,
             transcript: None,
             session_source: None,
             session_info: String::new(),
@@ -89,6 +91,16 @@ impl App {
         app
     }
 
+    pub fn group_for_entry(&self, index: usize) -> Option<(&usize, &std::ops::Range<usize>)> {
+        if index >= self.history.entries.len() {
+            return None;
+        }
+        self.groups
+            .range(..=self.history.entries.len() + index)
+            .next_back()
+            .filter(|(_, range)| range.contains(&index))
+    }
+
     pub fn selected_group(&self) -> Option<&std::ops::Range<usize>> {
         self.list
             .selected()
@@ -102,12 +114,7 @@ impl App {
             .selected()
             .and_then(|i| self.visible.get(i))
             .copied();
-        let target = selected.map(|index| {
-            self.groups
-                .iter()
-                .find(|(_, range)| range.contains(&index))
-                .map_or(index, |(&id, _)| id)
-        });
+        let target = selected.map(|index| self.group_for_entry(index).map_or(index, |(&id, _)| id));
         self.expanded_groups.clear();
         self.expanded_tools.clear();
         self.filter();
@@ -205,11 +212,7 @@ impl App {
                 .find(|&index| current.is_none_or(|current| order(index) < order(current)))
                 .unwrap_or(*failures.last().unwrap())
         };
-        if let Some((&id, _)) = self
-            .groups
-            .iter()
-            .find(|(_, range)| range.contains(&target))
-        {
+        if let Some((&id, _)) = self.group_for_entry(target) {
             self.expanded_groups.insert(id);
         }
         self.expanded_tools.insert(target);
@@ -304,9 +307,7 @@ impl App {
                 let mut rows = Vec::new();
                 let mut seen = std::collections::HashSet::new();
                 for &index in &self.visible {
-                    if let Some((&id, _)) =
-                        self.groups.iter().find(|(_, range)| range.contains(&index))
-                    {
+                    if let Some((&id, _)) = self.group_for_entry(index) {
                         if seen.insert(id) {
                             rows.push(id);
                         }
@@ -337,9 +338,7 @@ impl App {
 
     fn visible_position(&self, index: usize) -> Option<usize> {
         self.visible.iter().position(|&i| i == index).or_else(|| {
-            self.groups
-                .iter()
-                .find(|(_, range)| range.contains(&index))
+            self.group_for_entry(index)
                 .and_then(|(&group, _)| self.visible.iter().position(|&i| i == group))
         })
     }
@@ -412,9 +411,7 @@ impl App {
                 .nth(occurrence)
                 .map(|(i, _)| i)
         }) && let Some(position) = if selected_group {
-            self.groups
-                .iter()
-                .find(|(_, range)| range.contains(&index))
+            self.group_for_entry(index)
                 .and_then(|(&id, _)| self.visible.iter().position(|&i| i == id))
                 .or_else(|| self.visible_position(index))
         } else {

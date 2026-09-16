@@ -23,45 +23,64 @@ pub struct ToolInfo {
     pub failed: bool,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct History {
     pub entries: Vec<Entry>,
     pub skipped: usize,
 }
 
 impl History {
-    pub fn load(path: &Path) -> Result<Self> {
+    fn load(path: &Path, progress: &mut crate::loader::Progress<'_>) -> Result<Self> {
         let file = File::open(path).with_context(|| format!("Cannot open {}", path.display()))?;
-        let mut history = Self::parse(BufReader::new(file))?;
+        let mut history = Self::parse_with(BufReader::new(file), progress)?;
         for entry in &mut history.entries {
             entry.source = Some(path.to_path_buf());
         }
         Ok(history)
     }
 
+    #[cfg(test)]
     pub fn load_many(paths: &[PathBuf]) -> Result<Self> {
+        Self::load_many_with(paths, &mut |_, _| Ok(()))
+    }
+
+    pub fn load_many_with(
+        paths: &[PathBuf],
+        progress: &mut crate::loader::Progress<'_>,
+    ) -> Result<Self> {
         let mut merged = Self::default();
         let mut seen = std::collections::HashSet::new();
         for path in paths {
+            progress("Opening history files", merged.entries.len())?;
             let canonical = path
                 .canonicalize()
                 .with_context(|| format!("Cannot open {}", path.display()))?;
             if !seen.insert(canonical.clone()) {
                 continue;
             }
-            let history = Self::load(&canonical)?;
+            let history = Self::load(&canonical, progress)?;
             merged.entries.extend(history.entries);
             merged.skipped += history.skipped;
         }
+        progress("Sorting history", merged.entries.len())?;
         merged
             .entries
             .sort_by_key(|entry| std::cmp::Reverse(entry.ts));
         Ok(merged)
     }
 
+    #[cfg(test)]
     fn parse(reader: impl BufRead) -> Result<Self> {
+        Self::parse_with(reader, &mut |_, _| Ok(()))
+    }
+
+    fn parse_with(
+        reader: impl BufRead,
+        progress: &mut crate::loader::Progress<'_>,
+    ) -> Result<Self> {
         let mut history = Self::default();
-        for line in reader.lines() {
+        for (index, line) in reader.lines().enumerate() {
+            progress("Reading history lines", index + 1)?;
             let line = line.context("Cannot read history")?;
             if line.trim().is_empty() {
                 continue;

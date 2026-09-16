@@ -7,6 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[derive(Clone)]
 pub struct Session {
     pub history: History,
     pub info: String,
@@ -21,14 +22,25 @@ fn string(value: &Value, key: &str) -> String {
         .to_owned()
 }
 
+#[cfg(test)]
 pub fn find(root: &Path, id: &str) -> Result<PathBuf> {
+    find_with(root, id, &mut |_, _| Ok(()))
+}
+
+pub fn find_with(
+    root: &Path,
+    id: &str,
+    progress: &mut crate::loader::Progress<'_>,
+) -> Result<PathBuf> {
     if id.is_empty() {
         bail!("Selected prompt has no session ID");
     }
     let mut dirs = vec![root.to_path_buf()];
     let mut files = Vec::new();
     while let Some(dir) = dirs.pop() {
+        progress("Scanning session directories", files.len())?;
         for item in fs::read_dir(&dir).with_context(|| format!("Cannot read {}", dir.display()))? {
+            progress("Scanning session files", files.len())?;
             let item = item?;
             let kind = item.file_type()?;
             if kind.is_dir() {
@@ -45,30 +57,45 @@ pub fn find(root: &Path, id: &str) -> Result<PathBuf> {
         !p.file_stem()
             .is_some_and(|s| s.to_string_lossy().ends_with(id))
     });
-    for path in files {
-        let mut first = String::new();
-        BufReader::new(File::open(&path)?).read_line(&mut first)?;
-        if let Ok(value) = serde_json::from_str::<Value>(&first) {
-            let p = &value["payload"];
-            if value["type"] == "session_meta" && (p["id"] == id || p["session_id"] == id) {
-                return Ok(path);
-            }
+    for (index, path) in files.into_iter().enumerate() {
+        progress("Checking session IDs", index + 1)?;
+        if matches_id(&path, id)? {
+            return Ok(path);
         }
     }
     bail!("No session log for {id} in {}", root.display())
 }
 
+pub fn matches_id(path: &Path, id: &str) -> Result<bool> {
+    let mut first = String::new();
+    BufReader::new(File::open(path)?).read_line(&mut first)?;
+    Ok(serde_json::from_str::<Value>(&first).is_ok_and(|value| {
+        let payload = &value["payload"];
+        value["type"] == "session_meta" && (payload["id"] == id || payload["session_id"] == id)
+    }))
+}
+
 impl Session {
-    pub fn load(path: &Path) -> Result<Self> {
-        Self::parse(
+    pub fn load(path: &Path, progress: &mut crate::loader::Progress<'_>) -> Result<Self> {
+        Self::parse_with(
             BufReader::new(
                 File::open(path).with_context(|| format!("Cannot open {}", path.display()))?,
             ),
             path,
+            progress,
         )
     }
 
+    #[cfg(test)]
     fn parse(reader: impl BufRead, path: &Path) -> Result<Self> {
+        Self::parse_with(reader, path, &mut |_, _| Ok(()))
+    }
+
+    fn parse_with(
+        reader: impl BufRead,
+        path: &Path,
+        progress: &mut crate::loader::Progress<'_>,
+    ) -> Result<Self> {
         let mut history = History::default();
         let mut info = String::new();
         let mut model = String::new();
@@ -76,7 +103,8 @@ impl Session {
         let mut has_messages = false;
         let mut calls = Vec::new();
         let mut results = Vec::new();
-        for line in reader.lines() {
+        for (index, line) in reader.lines().enumerate() {
+            progress("Reading session lines", index + 1)?;
             let line = line?;
             if line.trim().is_empty() {
                 continue;
@@ -215,7 +243,9 @@ impl Session {
                 _ => {}
             }
         }
+        progress("Pairing tool calls and results", history.entries.len())?;
         pair_tools(&mut history.entries, calls, results);
+        progress("Preparing session", history.entries.len())?;
         // Older logs may only contain message events. Never double display
         // response messages and their event mirrors.
         if !has_messages {

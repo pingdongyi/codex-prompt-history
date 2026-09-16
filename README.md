@@ -125,13 +125,21 @@ Results are labeled with their originating tool name. Expanded results prioritiz
 
 Use `/` to search session text, tool names, or roles; `↑` / `↓` to select an entry; `←` / `→` to scroll its content; `o` to reverse order; and `r` to reload the session. `Esc` first clears a session search; with no active filters it returns to prompt history, preserving its selection and filters. While editing search, `Esc` finishes editing first; `Ctrl+U` clears the query.
 
-Session files are discovered recursively by metadata ID and loaded only when opened. Missing logs show an error without closing the browser. With a custom history file, the default session directory is its sibling `sessions` folder. Override this for another directory or archived logs:
+Session files are discovered recursively by metadata ID and loaded in the background only when opened. Missing logs show an error without closing the browser. With a custom history file, the default session directory is its sibling `sessions` folder. Override this for another directory or archived logs:
 
 ```sh
 codex-prompt-history --sessions-dir /path/to/sessions
 ```
 
 The viewer supports response-item messages and function/custom tool records, plus older event-only message logs. It avoids mirrored event-message duplicates. Non-text attachments appear as labels. System/developer instructions, reasoning records, and unrelated telemetry are omitted. Malformed JSON lines are skipped and counted. It displays the selected log only; fork ancestors are not reconstructed. Session entries are held in memory.
+
+## Background loading and memory cache
+
+Startup history loading, `r` reloads, session discovery, and session parsing run on a single background worker. The status line shows the current phase and processed line/file count; search, navigation, help, and quit remain available. `Esc` cancels a pending load before clearing filters or returning (finish editing search or close help first). A new request supersedes an older one, and cancelled or outdated results never replace the visible data. Cancellation is checked between records/files; it cannot interrupt an individual OS read or JSON parse already in progress. Failed reloads retain the current view.
+
+Up to four parsed sessions are cached in memory with a 64 MiB estimated retained-data budget. Least recently used entries are evicted. Cache lookup includes the session file path, size, and modification time; session IDs are checked against their source directory. Reopening an unchanged cached session reports “Session loaded from memory cache”. `r` always bypasses the cache. Files that change while loading, exceed the budget, or lack modification timestamps are not cached. This budget covers retained cache entries; the active view, background result, and temporary parsing allocations are additional.
+
+No history, session, or cache data is written to disk. The cache lasts only for this process. File metadata can miss externally modified content if its size and timestamp are deliberately preserved; use `r` to force a fresh read.
 
 ## Input format
 
@@ -141,7 +149,7 @@ One JSON object per line:
 {"session_id":"example-session","ts":1786406400,"text":"Explain this code"}
 ```
 
-`ts` is Unix time in seconds. Additional fields are ignored. Blank lines are ignored; malformed records (including incomplete final lines) are skipped and counted in the header. Missing or unreadable files produce an error before entering the TUI. Records are held in memory.
+`ts` is Unix time in seconds. Additional fields are ignored. Blank lines are ignored; malformed records (including incomplete final lines) are skipped and counted in the header. Missing or unreadable files show a loading error in the TUI; press `r` to retry or `q` to quit. Records are held in memory.
 
 ## Development
 

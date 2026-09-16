@@ -3,7 +3,6 @@ import fcntl
 import json
 import os
 import pty
-import re
 import select
 import struct
 import subprocess
@@ -11,6 +10,7 @@ import tempfile
 import termios
 import time
 from pathlib import Path
+from terminal_screen import Screen
 
 with tempfile.TemporaryDirectory() as directory:
     root = Path(directory)
@@ -38,21 +38,29 @@ with tempfile.TemporaryDirectory() as directory:
     executable = os.environ.get("HISTORY_BINARY", "target/debug/codex-prompt-history")
     proc = subprocess.Popen([executable, "--file", str(history)], stdin=slave, stdout=slave, stderr=slave, env=dict(os.environ, TERM="xterm-256color"))
 
+    screen = Screen(120, 36)
+
     def read_screen():
-        output = bytearray()
         until = time.monotonic() + 0.3
         while time.monotonic() < until:
             if select.select([master], [], [], 0.05)[0]:
-                output.extend(os.read(master, 65536))
-        plain = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', output.decode(errors="replace"))
-        return ''.join(plain.split())
+                screen.feed(os.read(master, 65536))
+        return screen.compact()
+
+    def wait_for(text, timeout=5):
+        until = time.monotonic() + timeout
+        while time.monotonic() < until:
+            rendered = read_screen()
+            if text in rendered:
+                return rendered
+        raise AssertionError(f"Missing {text}: {screen.compact()}")
 
     def press(key):
         os.write(master, key)
         return read_screen()
 
     try:
-        assert "PROMPTHISTORY" in read_screen()
+        assert "PROMPTHISTORY" in wait_for("Historyreloaded")
         assert press(b'a')  # activity focus
         assert press(b'g')  # beginning of the default 30-day range
         assert 'Nomatchingprompts' in press(b'\r')  # fixture records are from 1970
@@ -64,8 +72,9 @@ with tempfile.TemporaryDirectory() as directory:
         assert press(b'd')
         assert press(b't')  # source filter for the single loaded source
         assert press(b'\x1b')  # clear source filter before opening the session
-        screen = press(b'\r')
-        assert "Timeline" in screen and "demo-model" in screen and "ASSISTANT" in screen and "Toolactivity" in screen, screen
+        press(b'\r')
+        rendered = wait_for("SESSIONHISTORY")
+        assert "Timeline" in rendered and "demo-model" in rendered and "ASSISTANT" in rendered and "Toolactivity" in rendered, rendered
         assert press(b'\t')  # detail focus
         assert press(b'\x1b[6~')  # page down in the preview
         assert press(b'g')  # first preview line
@@ -73,9 +82,7 @@ with tempfile.TemporaryDirectory() as directory:
         assert "Nomatchingsessionentries" in press(b'/no-such-text')
         press(b'\x15')  # Ctrl+U clears session search
         press(b'\r')
-        # Ratatui emits only changed cells, so transitions may omit letters
-        # shared with the previous screen. Full fold content is asserted by
-        # the Rust TestBackend test; here verify each keyboard action redraws.
+        # Decode changed cells into a full screen before checking async updates.
         assert press(b'j')  # group
         assert press(b'\r')  # expand group
         assert press(b'j')  # first tool
@@ -84,15 +91,42 @@ with tempfile.TemporaryDirectory() as directory:
         assert press(b'c')  # collapse group
         assert 'Failedtool1/1' in press(b']')  # jump into the collapsed group
         press(b'[')  # wrap to the same failure
-        assert press(b'r')  # changed-cell redraw; reload state is covered by App tests
+        press(b'r')
+        wait_for("Sessionreloaded")
         assert "PROMPT" in press(b'\x1b')
+        press(b'\r')
+        wait_for("Sessionloadedfrommemorycache")
+        press(b'\x1b')
+        # A FIFO deliberately stalls background I/O without relying on file size
+        # or CPU speed. The UI must still handle help and cancellation.
+        original = history.read_bytes()
+        history.unlink()
+        os.mkfifo(history)
+        press(b'r')
+        wait_for("Openinghistoryfiles")
+        assert "Keyboardshortcuts" in press(b'?')
+        press(b'\x1b')  # dismiss help
+        press(b'\x1b')  # cancel load while its OS read is blocked
+        wait_for("Loadingcancelled")
+        writer = os.open(history, os.O_WRONLY | os.O_NONBLOCK)
+        try:
+            os.write(writer, b'{"session_id":"stale","ts":99,"text":"stale payload"}\n')
+        finally:
+            os.close(writer)
+        history.unlink()
+        history.write_bytes(original)
+        assert "stalepayload" not in read_screen()
+        assert "Loadingcancelled" in screen.compact()
+        press(b'r')
+        wait_for("Historyreloaded")
         press(b'j')
-        assert "No session log".replace(' ', '') in press(b'\r')
+        press(b'\r')
+        wait_for("Nosessionlog")
         press(b'q')
         proc.wait(timeout=5)
         assert proc.returncode == 0
         assert termios.tcgetattr(slave) == before
-        print("PASS: session open, search, clear, reload, back, missing log, and terminal restoration")
+        print("PASS: session navigation, cache hit, background I/O responsiveness, cancellation, stale-result rejection, and terminal restoration")
     finally:
         if proc.poll() is None:
             proc.kill()
