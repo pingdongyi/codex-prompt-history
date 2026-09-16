@@ -33,6 +33,67 @@ fn spaced_item(mut lines: Vec<Line<'static>>, spacer: bool) -> ListItem<'static>
     ListItem::new(lines)
 }
 
+fn elide(text: &str, width: usize) -> String {
+    let text = display_text(text).replace('\n', " ");
+    if Span::raw(&text).width() <= width {
+        return text;
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut used = 0;
+    let mut result = String::new();
+    for c in text.chars() {
+        let size = Span::raw(c.to_string()).width();
+        if used + size > width - 1 {
+            break;
+        }
+        result.push(c);
+        used += size;
+    }
+    result.push('…');
+    result
+}
+
+fn tool_label(entry: &crate::history::Entry, width: usize) -> String {
+    let summary = entry.text.lines().next().filter(|line| {
+        line.starts_with("Completed")
+            || line.starts_with("Failed")
+            || line.starts_with("Result received")
+            || *line == "No result recorded"
+    });
+    let status = if crate::app::is_failed_tool(entry) {
+        summary
+            .filter(|s| s.starts_with("Failed"))
+            .unwrap_or("Failed")
+            .to_owned()
+    } else {
+        summary
+            .map(str::to_owned)
+            .unwrap_or_else(|| timestamp(entry.ts))
+    };
+    let status = elide(&status, (width / 2).max(1));
+    let name = elide(
+        entry
+            .session_id
+            .strip_prefix("TOOL · ")
+            .unwrap_or(&entry.session_id),
+        (width / 3).clamp(1, 24),
+    );
+    let available = width.saturating_sub(Span::raw(&name).width() + Span::raw(&status).width() + 8);
+    if let Some(action) = entry
+        .tool
+        .as_ref()
+        .map(|tool| &tool.summary)
+        .filter(|s| !s.is_empty())
+        && available >= 4
+    {
+        format!("▸ {name} · {} · {status}", elide(action, available))
+    } else {
+        format!("▸ {name} · {status}")
+    }
+}
+
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let transcript = app.session_source.is_some();
@@ -243,9 +304,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             if let Some(range) = app.groups.get(&i) {
                 let failures = app.history.entries[range.clone()]
                     .iter()
-                    .filter(|entry| {
-                        entry.text.starts_with("Failed") || entry.text.starts_with("FAILED")
-                    })
+                    .filter(|entry| crate::app::is_failed_tool(entry))
                     .count();
                 return spaced_item(
                     vec![
@@ -285,19 +344,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                         || line.starts_with("Result received")
                         || *line == "No result recorded"
                 });
-                let title = entry
-                    .session_id
-                    .strip_prefix("TOOL · ")
-                    .unwrap_or(&entry.session_id);
                 let lines = vec![Line::styled(
-                    format!(
-                        "▸ {} · {}",
-                        display_text(title),
-                        summary
-                            .map(str::to_owned)
-                            .unwrap_or_else(|| timestamp(entry.ts))
-                    ),
-                    Style::default().fg(if summary.is_some_and(|s| s.starts_with("Failed")) {
+                    tool_label(entry, panes[0].width.saturating_sub(4) as usize),
+                    Style::default().fg(if crate::app::is_failed_tool(entry) {
                         Color::Red
                     } else if summary.is_some_and(|s| s.starts_with("Completed")) {
                         Color::Green
@@ -601,7 +650,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(if transcript {
-                " Tab focus  / search  x clear  Enter fold  c fold all  Esc back  ? help  q quit"
+                " Tab focus  [/] failed tools  / search  Enter fold  c fold all  Esc back  ? help  q quit"
             } else {
                 " Tab focus  / search  x clear  s session  t source  Enter open  ? help  q quit"
             }),
@@ -659,6 +708,7 @@ fn help(frame: &mut Frame, area: Rect, transcript: bool) {
                 "Toggle selected session filter"
             },
         ),
+        ("[ / ]", "Previous / next failed tool"),
         ("o", "Reverse chronological order"),
         ("r", "Reload history from disk"),
         (
@@ -701,29 +751,51 @@ mod tests {
     use crate::history::{Entry, History};
     use ratatui::{Terminal, backend::TestBackend};
     #[test]
+    fn tool_summary_leaves_room_for_failure_status() {
+        let entry = Entry {
+            tool: Some(crate::history::ToolInfo {
+                summary: "cargo test 中文路径".repeat(20),
+                failed: true,
+            }),
+            source: None,
+            session_id: "TOOL · shell".into(),
+            ts: 0,
+            text: "Failed · exit 2".into(),
+        };
+        let label = tool_label(&entry, 52);
+        assert!(label.contains("cargo test"));
+        assert!(label.contains('…'));
+        assert!(label.ends_with("Failed · exit 2"));
+        assert!(Span::raw(label).width() <= 52);
+    }
+    #[test]
     fn grouped_tools_are_adjacent_and_selected_content_is_not_cleared() {
         let mut app = App::from_session(crate::session::Session {
             history: History {
                 entries: vec![
                     Entry {
+                        tool: None,
                         source: None,
                         session_id: "USER".into(),
                         ts: 1,
                         text: "hello".into(),
                     },
                     Entry {
+                        tool: None,
                         source: None,
                         session_id: "TOOL · shell".into(),
                         ts: 2,
                         text: "Completed".into(),
                     },
                     Entry {
+                        tool: None,
                         source: None,
                         session_id: "TOOL · search".into(),
                         ts: 3,
                         text: "Completed".into(),
                     },
                     Entry {
+                        tool: None,
                         source: None,
                         session_id: "ASSISTANT".into(),
                         ts: 4,
@@ -756,6 +828,7 @@ mod tests {
     fn tool_details_are_hidden_until_expanded() {
         let mut app = App::new(History {
             entries: vec![Entry {
+                tool: None,
                 source: None,
                 session_id: "TOOL · shell".into(),
                 ts: 1,
@@ -807,6 +880,7 @@ mod tests {
                 "Please resize"
             }));
             app.history.entries.push(Entry {
+                tool: None,
                 source: None,
                 session_id: "世界".into(),
                 ts: i64::MAX,

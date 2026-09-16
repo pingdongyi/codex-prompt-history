@@ -9,10 +9,18 @@ use std::{
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct Entry {
     #[serde(skip)]
+    pub tool: Option<ToolInfo>,
+    #[serde(skip)]
     pub source: Option<PathBuf>,
     pub session_id: String,
     pub ts: i64,
     pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolInfo {
+    pub summary: String,
+    pub failed: bool,
 }
 
 #[derive(Default)]

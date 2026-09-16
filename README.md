@@ -65,6 +65,7 @@ Archives and `SHA256SUMS` are written to `dist/`. Verify downloads on Linux with
 | `s` | Toggle filtering to the selected session |
 | `t` | Cycle loaded sources: all, alpha, beta, gamma (when present) |
 | `x` | Clear search |
+| `[` / `]` | Previous / next failed tool in a session (wraps) |
 | `o` | Toggle newest / oldest first |
 | `r` | Reload the file |
 | `Esc` | Clear search, then session, then source; return from a session when no filters remain |
@@ -101,9 +102,13 @@ Select a prompt and press `Enter` to load its session from `~/.codex/sessions/`.
 
 JSON is typeset as indented fields and lists, including decoded multiline strings and nested JSON tool output. Each tool call and its result share one collapsed row, matched by `call_id` even when calls overlap. Groups stay at the call's position in the timeline. Select one and press `Enter` or `Space` to view input and result together. Search includes both. Reloading a session rebuilds pairs while preserving selection and expansion state when matching records still exist.
 
+Tool rows show a compact command, file path, search query, or patch file when recognizable in the arguments. Long summaries are truncated to leave room for status; full input remains in the detail pane.
+
 Tool rows show completion/failure and elapsed time when explicitly recorded in result metadata. Otherwise they show “Result received”. Calls without a matching result show “No result recorded”; unmatched and extra results remain separate so no records disappear.
 
 Consecutive tool entries are folded into one **Tool activity** group by default, with an entry count and failure count. `Enter` / `Space` expands the group; select a tool inside it and use the same key to view its input and result. Press `c` to collapse all groups and tool details. Messages stay visible between groups. Search reveals matching individual tools regardless of group state; clearing search restores the group layout.
+
+Press `]` / `[` in a session to jump to the next / previous failed tool. Navigation follows the current sort order and search filter, wraps at the ends, and expands both the containing group and the target tool. Explicit nonzero exit codes or error metadata identify failures; error words in ordinary output do not. The status line reports when no matching failures exist.
 
 Results are labeled with their originating tool name. Expanded results prioritize readable output and error output, with explicit completion/failure indicators when recorded. Content wrappers are flattened; timing, other metadata, and call references appear below the output.
 

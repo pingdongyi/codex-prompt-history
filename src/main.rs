@@ -2,6 +2,7 @@ mod app;
 mod formatting;
 mod history;
 mod session;
+mod tool_summary;
 mod ui;
 
 use anyhow::{Context, Result, bail};
@@ -147,6 +148,8 @@ fn run(
         }
         match key.code {
             KeyCode::Char('c') if app.session_source.is_some() => app.collapse_groups(),
+            KeyCode::Char(']') if app.session_source.is_some() => app.jump_failure(true),
+            KeyCode::Char('[') if app.session_source.is_some() => app.jump_failure(false),
             KeyCode::Enter | KeyCode::Char(' ') if app.session_source.is_some() => {
                 app.toggle_tool()
             }
@@ -226,6 +229,7 @@ mod tests {
         ]);
         assert_eq!(args.file.len(), 3);
         let entry = history::Entry {
+            tool: None,
             source: Some(args.file[1].clone()),
             session_id: "same".into(),
             ts: 0,

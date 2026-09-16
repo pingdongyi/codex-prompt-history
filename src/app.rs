@@ -136,6 +136,86 @@ impl App {
         }
     }
 
+    pub fn jump_failure(&mut self, forward: bool) {
+        if self.session_source.is_none() {
+            return;
+        }
+        let query = self.query.to_lowercase();
+        let mut failures: Vec<usize> = self
+            .history
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| is_failed_tool(entry) && matches_query(entry, &query))
+            .map(|(index, _)| index)
+            .collect();
+        if self.oldest_first {
+            failures.reverse();
+        }
+        if failures.is_empty() {
+            self.status = "No failed tools match the current filters".into();
+            return;
+        }
+        let selected = self
+            .list
+            .selected()
+            .and_then(|position| self.visible.get(position))
+            .copied();
+        let group = selected.and_then(|id| self.groups.get(&id));
+        let current = group
+            .map(|range| {
+                if self.oldest_first {
+                    range.end - 1
+                } else {
+                    range.start
+                }
+            })
+            .or(selected);
+        let order = |index: usize| {
+            if self.oldest_first {
+                self.history.entries.len() - 1 - index
+            } else {
+                index
+            }
+        };
+        let target = if forward {
+            failures
+                .iter()
+                .copied()
+                .find(|&index| {
+                    current.is_none_or(|current| {
+                        order(index) > order(current) || group.is_some() && index == current
+                    })
+                })
+                .unwrap_or(failures[0])
+        } else {
+            failures
+                .iter()
+                .rev()
+                .copied()
+                .find(|&index| current.is_none_or(|current| order(index) < order(current)))
+                .unwrap_or(*failures.last().unwrap())
+        };
+        if let Some((&id, _)) = self
+            .groups
+            .iter()
+            .find(|(_, range)| range.contains(&target))
+        {
+            self.expanded_groups.insert(id);
+        }
+        self.expanded_tools.insert(target);
+        self.filter();
+        self.list
+            .select(self.visible.iter().position(|&index| index == target));
+        self.scroll = 0;
+        self.focus = Focus::List;
+        let number = failures.iter().position(|&index| index == target).unwrap() + 1;
+        self.status = format!(
+            "Failed tool {number}/{} · [ previous · ] next (wraps)",
+            failures.len()
+        );
+    }
+
     pub fn filter(&mut self) {
         let current = self
             .list
@@ -164,8 +244,7 @@ impl App {
                     && self.session.as_ref().is_none_or(|id| {
                         *id == entry.session_id && self.session_origin == entry.source
                     })
-                    && (entry.text.to_lowercase().contains(&query)
-                        || entry.session_id.to_lowercase().contains(&query))
+                    && matches_query(entry, &query)
             })
             .map(|(i, _)| i)
             .collect();
@@ -449,13 +528,102 @@ impl App {
     }
 }
 
+fn matches_query(entry: &Entry, query: &str) -> bool {
+    query.is_empty()
+        || entry.text.to_lowercase().contains(query)
+        || entry.session_id.to_lowercase().contains(query)
+        || entry
+            .tool
+            .as_ref()
+            .is_some_and(|tool| tool.summary.to_lowercase().contains(query))
+}
+
 pub fn is_tool(entry: &Entry) -> bool {
     entry.session_id.starts_with("TOOL ·") || entry.session_id.starts_with("RESULT ·")
+}
+
+pub fn is_failed_tool(entry: &Entry) -> bool {
+    is_tool(entry)
+        && entry.tool.as_ref().map_or_else(
+            || entry.text.starts_with("Failed") || entry.text.starts_with("FAILED"),
+            |tool| tool.failed,
+        )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn failure_navigation_expands_groups_wraps_and_respects_search_and_order() {
+        let mut a = app();
+        a.session_source = Some("session".into());
+        a.history.entries = vec![
+            Entry {
+                tool: None,
+                source: None,
+                session_id: "USER".into(),
+                ts: 0,
+                text: "Failed is just a word here".into(),
+            },
+            Entry {
+                tool: Some(crate::history::ToolInfo {
+                    summary: "one".into(),
+                    failed: true,
+                }),
+                source: None,
+                session_id: "TOOL · shell".into(),
+                ts: 1,
+                text: "Failed\nneedle one".into(),
+            },
+            Entry {
+                tool: Some(crate::history::ToolInfo {
+                    summary: "ok".into(),
+                    failed: false,
+                }),
+                source: None,
+                session_id: "TOOL · shell".into(),
+                ts: 2,
+                text: "Completed".into(),
+            },
+            Entry {
+                tool: Some(crate::history::ToolInfo {
+                    summary: "two".into(),
+                    failed: true,
+                }),
+                source: None,
+                session_id: "TOOL · read".into(),
+                ts: 3,
+                text: "Failed\nneedle two".into(),
+            },
+        ];
+        a.filter();
+        assert_eq!(a.visible, vec![0, 5]);
+        a.jump_failure(true);
+        assert_eq!(a.selected().unwrap().ts, 1);
+        assert!(a.expanded_groups.contains(&5));
+        assert!(!a.tool_collapsed(1));
+        a.jump_failure(false);
+        assert_eq!(a.selected().unwrap().ts, 3);
+        a.oldest_first = true;
+        a.filter();
+        a.jump_failure(true);
+        assert_eq!(a.selected().unwrap().ts, 1);
+        a.query = "two".into();
+        a.filter();
+        a.jump_failure(true);
+        assert_eq!(a.selected().unwrap().ts, 3);
+        a.history.entries[3].tool.as_mut().unwrap().summary = "summary-only match".into();
+        a.query = "summary-only".into();
+        a.filter();
+        a.jump_failure(true);
+        assert_eq!(a.selected().unwrap().ts, 3);
+        a.query = "Completed".into();
+        a.filter();
+        let selected = a.list.selected();
+        a.jump_failure(true);
+        assert_eq!(a.list.selected(), selected);
+        assert!(a.status.contains("No failed tools"));
+    }
     #[test]
     fn filtering_and_reload_keep_the_record_and_scroll() {
         let mut a = app();
@@ -480,6 +648,7 @@ mod tests {
         replacement.entries.insert(
             0,
             Entry {
+                tool: None,
                 source: None,
                 session_id: "new".into(),
                 ts: 4,
@@ -583,24 +752,28 @@ mod tests {
         let mut a = App::new(History {
             entries: vec![
                 Entry {
+                    tool: None,
                     source: None,
                     session_id: "USER".into(),
                     ts: 1,
                     text: "hello".into(),
                 },
                 Entry {
+                    tool: None,
                     source: None,
                     session_id: "TOOL · shell".into(),
                     ts: 2,
                     text: "Completed\nneedle".into(),
                 },
                 Entry {
+                    tool: None,
                     source: None,
                     session_id: "TOOL · search".into(),
                     ts: 3,
                     text: "Failed\noutput".into(),
                 },
                 Entry {
+                    tool: None,
                     source: None,
                     session_id: "ASSISTANT".into(),
                     ts: 4,
@@ -639,18 +812,21 @@ mod tests {
         App::new(History {
             entries: vec![
                 Entry {
+                    tool: None,
                     source: None,
                     session_id: "a".into(),
                     ts: 3,
                     text: "RUST 世界".into(),
                 },
                 Entry {
+                    tool: None,
                     source: None,
                     session_id: "b".into(),
                     ts: 2,
                     text: "other".into(),
                 },
                 Entry {
+                    tool: None,
                     source: None,
                     session_id: "a".into(),
                     ts: 1,

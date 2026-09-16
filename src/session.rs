@@ -110,6 +110,7 @@ impl Session {
                 }
                 "response_item" => {
                     let kind = p["type"].as_str().unwrap_or_default();
+                    let mut tool = None;
                     let (role, text) = match kind {
                         "message" => {
                             let role = string(p, "role");
@@ -145,6 +146,14 @@ impl Session {
                             let name = string(p, "name");
                             let call_id = string(p, "call_id");
                             calls.push((history.entries.len(), call_id));
+                            tool = Some(crate::history::ToolInfo {
+                                summary: p
+                                    .get("arguments")
+                                    .or_else(|| p.get("input"))
+                                    .map(crate::tool_summary::summarize)
+                                    .unwrap_or_default(),
+                                failed: false,
+                            });
                             (
                                 format!("TOOL · {name}"),
                                 p.get("arguments")
@@ -155,10 +164,20 @@ impl Session {
                         }
                         "function_call_output" | "custom_tool_call_output" => {
                             let call_id = string(p, "call_id");
-                            let summary = p
+                            let failed = p.get("output").is_some_and(crate::tool_summary::failed);
+                            tool = Some(crate::history::ToolInfo {
+                                summary: String::new(),
+                                failed,
+                            });
+                            let mut summary = p
                                 .get("output")
                                 .map(crate::formatting::result_summary)
                                 .unwrap_or_else(|| "Result received".into());
+                            if failed && !summary.starts_with("Failed") {
+                                summary = summary
+                                    .replacen("Result received", "Failed", 1)
+                                    .replacen("Completed", "Failed", 1);
+                            }
                             results.push((history.entries.len(), call_id.clone(), summary));
                             let mut output = p
                                 .get("output")
@@ -172,6 +191,7 @@ impl Session {
                         _ => continue,
                     };
                     history.entries.push(Entry {
+                        tool,
                         source: None,
                         session_id: role,
                         ts,
@@ -185,6 +205,7 @@ impl Session {
                         _ => continue,
                     };
                     fallback.push(Entry {
+                        tool: None,
                         source: None,
                         session_id: role.into(),
                         ts,
@@ -229,6 +250,13 @@ fn pair_tools(
     let mut removed = HashSet::new();
     for (result_index, id, summary) in results {
         if let Some(call_index) = pending.get_mut(&id).and_then(VecDeque::pop_front) {
+            let failed = entries[result_index]
+                .tool
+                .as_ref()
+                .is_some_and(|tool| tool.failed);
+            if let Some(tool) = &mut entries[call_index].tool {
+                tool.failed = failed;
+            }
             let output = std::mem::take(&mut entries[result_index].text);
             let input = std::mem::take(&mut entries[call_index].text);
             entries[call_index].text = format!("{summary}\n\nINPUT\n{input}\n\nRESULT\n{output}");
@@ -288,6 +316,9 @@ mod tests {
         let entries = &session.history.entries;
         assert_eq!(entries.len(), 8);
         assert!(entries[0].text.starts_with("Failed · exit 2"));
+        assert_eq!(entries[0].tool.as_ref().unwrap().summary, "command A");
+        assert!(entries[0].tool.as_ref().unwrap().failed);
+        assert!(!entries[1].tool.as_ref().unwrap().failed);
         assert!(entries[0].text.contains("command A"));
         assert!(entries[0].text.contains("error A"));
         assert!(!entries[0].text.contains("answer B"));

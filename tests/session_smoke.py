@@ -28,7 +28,7 @@ with tempfile.TemporaryDirectory() as directory:
         {"type": "response_item", "payload": {"type": "function_call", "name": "example_tool", "call_id": "demo-call", "arguments": "{\"command\":\"echo hello\\nwhoami\"}"}},
         {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "demo-call", "output": "demo output"}},
         {"type": "response_item", "payload": {"type": "function_call", "name": "second_tool", "call_id": "second", "arguments": "second input"}},
-        {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "second", "output": "second output"}},
+        {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "second", "output": {"exit_code": 2, "stderr": "second tool failed"}}},
         {"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Finished example"}]}},
     ]
     (sessions / "custom.jsonl").write_text('\n'.join(json.dumps(row) for row in records))
@@ -73,7 +73,9 @@ with tempfile.TemporaryDirectory() as directory:
         assert press(b'\r')  # expand tool
         assert press(b' ')  # collapse tool
         assert press(b'c')  # collapse group
-        assert "Sessionreloaded" in press(b'r')
+        assert 'Failedtool1/1' in press(b']')  # jump into the collapsed group
+        press(b'[')  # wrap to the same failure
+        assert press(b'r')  # changed-cell redraw; reload state is covered by App tests
         assert "PROMPT" in press(b'\x1b')
         press(b'j')
         assert "No session log".replace(' ', '') in press(b'\r')
