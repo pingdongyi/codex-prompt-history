@@ -1,11 +1,10 @@
-## Codex Prompt History v0.5.1
+## Codex Prompt History v0.5.2
 
-Toggling the session filter with `s` now keeps the currently selected prompt instead of jumping to the first entry.
+The 30-day activity chart now fills the available panel width and adapts when the terminal is resized.
 
-- Preserve selection when enabling and disabling the session filter.
-- Retain the prompt preview's scroll position and the selection's relative list position where possible.
-- Preserve the current selection after navigating within a filtered session.
-- Add regression coverage for filter toggling with search and reversed ordering.
+- Spread daily bars across the full chart width, with today at the right edge.
+- Preserve the original daily counts, matching-prompt total, and vertical scale.
+- Continue aggregating all loaded histories and applying current search/session filters.
 
 ### Downloads
 

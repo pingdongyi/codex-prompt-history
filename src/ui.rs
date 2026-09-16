@@ -115,13 +115,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             }
         }
         let start = today.checked_sub_days(Days::new(29)).unwrap_or(today);
+        let block = panel(format!(
+            " Activity · {start} → {today} · {} matching prompts ",
+            activity.iter().sum::<u64>()
+        ));
+        let width = block.inner(rows[1]).width as usize;
+        // Repeat each day's height across its share of the available columns.
+        // Keep the original daily counts for the total and vertical scale.
+        let bars: Vec<u64> = (0..width)
+            .map(|column| activity[column * activity.len() / width])
+            .collect();
         frame.render_widget(
             Sparkline::default()
-                .block(panel(format!(
-                    " Activity · {start} → {today} · {} matching prompts ",
-                    activity.iter().sum::<u64>()
-                )))
-                .data(activity)
+                .block(block)
+                .data(bars)
                 .style(Style::default().fg(ACCENT)),
             rows[1],
         );
