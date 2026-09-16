@@ -1,5 +1,5 @@
 use crate::{
-    app::App,
+    app::{App, Focus},
     history::{display_text, timestamp},
 };
 use chrono::{Days, Local};
@@ -36,9 +36,9 @@ fn spaced_item(mut lines: Vec<Line<'static>>, spacer: bool) -> ListItem<'static>
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let transcript = app.session_source.is_some();
-    if area.width < 45 || area.height < 14 {
+    if area.width < 45 || area.height < 18 {
         frame.render_widget(
-            Paragraph::new("Please resize the terminal to at least 45 × 14. Press q to quit.")
+            Paragraph::new("Please resize the terminal to at least 45 × 18. Press q to quit.")
                 .wrap(Wrap { trim: false }),
             area,
         );
@@ -48,6 +48,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Constraint::Length(2),
         Constraint::Length(if transcript { 5 } else { 4 }),
         Constraint::Length(3),
+        Constraint::Length(2),
         Constraint::Min(3),
         Constraint::Length(2),
     ])
@@ -174,6 +175,29 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         rows[2],
     );
 
+    let count = app.matched_count;
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(
+                display_text(&app.filter_summary()),
+                Style::default().fg(ACCENT),
+            ),
+            Line::styled(
+                format!(
+                    " {count}/{} records · Focus: {} · Tab switches panes",
+                    app.history.entries.len(),
+                    if app.focus == Focus::List {
+                        "List"
+                    } else {
+                        "Details"
+                    }
+                ),
+                Style::default().fg(MUTED),
+            ),
+        ]),
+        rows[3],
+    );
+
     let panes = Layout::default()
         .direction(if area.width >= 100 {
             Direction::Horizontal
@@ -181,7 +205,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Direction::Vertical
         })
         .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
-        .split(rows[3]);
+        .split(rows[4]);
     let spacers: Vec<bool> = app
         .visible
         .iter()
@@ -303,10 +327,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                         entry
                             .source
                             .as_deref()
-                            .and_then(std::path::Path::parent)
-                            .and_then(std::path::Path::file_name)
+                            .map(crate::history::source_name)
                             .unwrap_or_default()
-                            .to_string_lossy()
                     )
                 } else {
                     id
@@ -373,13 +395,25 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             } else {
                 "No matching prompts.\nEsc clears filters · r reloads"
             })
-            .block(panel(title))
+            .block(
+                panel(title).border_style(Style::default().fg(if app.focus == Focus::List {
+                    ACCENT
+                } else {
+                    MUTED
+                })),
+            )
             .wrap(Wrap { trim: false }),
             panes[0],
         );
     } else {
         let heights: Vec<usize> = items.iter().map(ListItem::height).collect();
-        let block = panel(title).padding(Padding::new(0, 0, 1, 0));
+        let block = panel(title)
+            .border_style(Style::default().fg(if app.focus == Focus::List {
+                ACCENT
+            } else {
+                MUTED
+            }))
+            .padding(Padding::new(0, 0, 1, 0));
         let inner = block.inner(panes[0]);
         frame.render_stateful_widget(
             List::new(items)
@@ -535,11 +569,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         lines.push(Line::from("Select a prompt to read it here."));
     }
     let height = panes[1].height.saturating_sub(2) as usize;
-    app.scroll = app.scroll.min(lines.len().saturating_sub(height));
+    app.detail_page_size = height.saturating_sub(1).max(1);
+    app.detail_max_scroll = lines.len().saturating_sub(height);
+    app.scroll = app.scroll.min(app.detail_max_scroll);
     let title = format!(
         " {} · line {} · ←/→ scroll ",
         if transcript {
-            "Message / tool event"
+            "Details"
         } else {
             "Prompt · Enter opens session"
         },
@@ -553,19 +589,25 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 .take(height)
                 .collect::<Vec<_>>(),
         )
-        .block(panel(title)),
+        .block(panel(title).border_style(Style::default().fg(
+            if app.focus == Focus::Detail {
+                ACCENT
+            } else {
+                MUTED
+            },
+        ))),
         panes[1],
     );
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(if transcript {
-                " Enter/Space fold  c fold all  / search  ↑↓ select  ←→ scroll  Esc back  r reload  ? help  q quit"
+                " Tab focus  / search  x clear  Enter fold  c fold all  Esc back  ? help  q quit"
             } else {
-                " Enter session  / search  ↑↓ select  s filter  r reload  ? help  q quit"
+                " Tab focus  / search  x clear  s session  t source  Enter open  ? help  q quit"
             }),
             Line::styled(display_text(&app.status), Style::default().fg(MUTED)),
         ]),
-        rows[4],
+        rows[5],
     );
     if app.help {
         help(frame, area, transcript);
@@ -574,7 +616,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
 fn help(frame: &mut Frame, area: Rect, transcript: bool) {
     let width = area.width.min(64);
-    let height = area.height.min(20);
+    let height = area.height.min(24);
     let popup = Rect::new(
         (area.width - width) / 2,
         (area.height - height) / 2,
@@ -591,11 +633,14 @@ fn help(frame: &mut Frame, area: Rect, transcript: bool) {
                 "Open selected session history"
             },
         ),
-        ("↑/↓ or j/k", "Select prompt / session entry"),
-        ("Home/End g/G", "First / last prompt"),
-        ("PgUp/PgDn", "Move 10 prompts"),
+        ("Tab / Shift+Tab", "Switch list / details focus"),
+        ("↑/↓ or j/k", "Navigate focused pane"),
+        ("Home/End g/G", "First / last item or detail line"),
+        ("PgUp/PgDn", "Page through focused pane"),
         ("←/→ or K/J", "Scroll prompt preview"),
         ("/", "Edit live search"),
+        ("x", "Clear search"),
+        ("t", "Cycle source (prompt history)"),
         (
             "c",
             if transcript {
@@ -619,9 +664,9 @@ fn help(frame: &mut Frame, area: Rect, transcript: bool) {
         (
             "Esc",
             if transcript {
-                "Return to prompt history"
+                "Clear next filter, then go back"
             } else {
-                "Clear search and session filter"
+                "Clear search, session, then source"
             },
         ),
         ("q / Ctrl+C", "Quit"),

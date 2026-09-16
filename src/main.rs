@@ -86,14 +86,20 @@ fn run(
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             break;
         }
-        if key.code == KeyCode::Esc
-            && root
-                .transcript
-                .as_ref()
-                .is_some_and(|app| !app.searching && !app.help)
-        {
-            root.transcript = None;
-            continue;
+        if key.code == KeyCode::Esc {
+            let current = match root.transcript.as_deref_mut() {
+                Some(app) => app,
+                None => &mut *root,
+            };
+            if !current.searching && !current.help {
+                if current.clear_one_filter() {
+                    continue;
+                }
+                if root.transcript.is_some() {
+                    root.transcript = None;
+                    continue;
+                }
+            }
         }
         if key.code == KeyCode::Enter && root.transcript.is_none() && !root.searching && !root.help
         {
@@ -145,19 +151,20 @@ fn run(
                 app.toggle_tool()
             }
             KeyCode::Char('q') => break,
-            KeyCode::Char('/') => app.searching = true,
-            KeyCode::Esc => {
+            KeyCode::Tab | KeyCode::BackTab => app.toggle_focus(),
+            KeyCode::Char('t') if app.session_source.is_none() => app.cycle_source(),
+            KeyCode::Char('x') => {
                 app.query.clear();
-                app.session = None;
-                app.session_origin = None;
                 app.filter();
             }
-            KeyCode::Char('j') | KeyCode::Down => app.move_selection(1),
-            KeyCode::Char('k') | KeyCode::Up => app.move_selection(-1),
-            KeyCode::Char('g') | KeyCode::Home => app.move_selection(isize::MIN),
-            KeyCode::Char('G') | KeyCode::End => app.move_selection(isize::MAX),
-            KeyCode::PageDown => app.move_selection(10),
-            KeyCode::PageUp => app.move_selection(-10),
+            KeyCode::Char('/') => app.searching = true,
+            KeyCode::Esc => {}
+            KeyCode::Char('j') | KeyCode::Down => app.navigate(1),
+            KeyCode::Char('k') | KeyCode::Up => app.navigate(-1),
+            KeyCode::Char('g') | KeyCode::Home => app.navigate(isize::MIN),
+            KeyCode::Char('G') | KeyCode::End => app.navigate(isize::MAX),
+            KeyCode::PageDown => app.page(1),
+            KeyCode::PageUp => app.page(-1),
             KeyCode::Char('J') | KeyCode::Right => app.scroll = app.scroll.saturating_add(3),
             KeyCode::Char('K') | KeyCode::Left => app.scroll = app.scroll.saturating_sub(3),
             KeyCode::Char('s') if app.session_source.is_none() => app.toggle_session(),
@@ -169,11 +176,8 @@ fn run(
             KeyCode::Char('r') if app.session_source.is_some() => {
                 match session::Session::load(app.session_source.as_ref().unwrap()) {
                     Ok(session) => {
-                        app.expanded_tools.clear();
-                        app.expanded_groups.clear();
-                        app.history = session.history;
+                        app.replace_history(session.history);
                         app.session_info = session.info;
-                        app.filter();
                         app.status = "Session reloaded".into();
                     }
                     Err(error) => app.status = format!("Reload failed: {error}"),
@@ -181,8 +185,7 @@ fn run(
             }
             KeyCode::Char('r') => match History::load_many(paths) {
                 Ok(history) => {
-                    app.history = history;
-                    app.filter();
+                    app.replace_history(history);
                     app.status = "History reloaded".into();
                 }
                 Err(error) => app.status = format!("Reload failed: {error}"),

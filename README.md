@@ -20,7 +20,7 @@ cargo install --path .
 codex-prompt-history
 ```
 
-Requires an interactive terminal, at least 45 columns × 14 rows. Wide terminals show side-by-side panes; narrower terminals stack them. Dates use the local timezone.
+Requires an interactive terminal, at least 45 columns × 18 rows. Wide terminals show side-by-side panes; narrower terminals stack them. Dates use the local timezone.
 
 ## Release binaries (amd64 / x86-64)
 
@@ -54,17 +54,20 @@ Archives and `SHA256SUMS` are written to `dist/`. Verify downloads on Linux with
 | Key | Action |
 | --- | --- |
 | `Enter` | Open the selected prompt's session timeline |
-| `↑` / `↓`, `k` / `j` | Select a prompt |
-| `Home` / `End`, `g` / `G` | First / last prompt |
-| `PgUp` / `PgDn` | Move ten prompts |
+| `Tab` / `Shift+Tab` | Switch focus between list and details |
+| `↑` / `↓`, `k` / `j` | Navigate the focused pane |
+| `Home` / `End`, `g` / `G` | First / last item or detail line |
+| `PgUp` / `PgDn` | Move ten list items or one page of details |
 | `←` / `→`, `K` / `J` | Scroll the full prompt |
 | `/` | Edit case-insensitive live search |
 | `Enter` / `Esc` while searching | Finish editing, retaining search |
 | `Ctrl+U` while searching | Clear query |
 | `s` | Toggle filtering to the selected session |
+| `t` | Cycle loaded sources: all, alpha, beta, gamma (when present) |
+| `x` | Clear search |
 | `o` | Toggle newest / oldest first |
 | `r` | Reload the file |
-| `Esc` | Clear all filters |
+| `Esc` | Clear search, then session, then source; return from a session when no filters remain |
 | `?` | Show keyboard help |
 | `q` / `Ctrl+C` | Quit |
 
@@ -72,11 +75,31 @@ The activity chart follows the current filters. Search matches literal substring
 
 Repeat `--file` to merge histories in timestamp order. Without `--file`, only `~/.codex/history.jsonl` is loaded; other directories are never discovered automatically. Multi-file views label each prompt's source. Session filtering distinguishes identical session IDs from different files, and `Enter` opens the source file's sibling `sessions` directory. `--sessions-dir` explicitly overrides that directory for all sources. Repeating the same file loads it once. Every requested file must be readable; reload (`r`) refreshes all sources together and preserves the current data if any file cannot be read.
 
+## Navigation and source profiles
+
+The focused pane has a cyan border. `Tab` switches between the list and details; arrows, Home/End, and Page Up/Down operate on that pane. The filter strip shows active search, session, source, and matching record counts. `x` clears only search; `s` toggles session filtering; `t` cycles loaded sources and clears a source-specific session filter. `Esc` clears one filter at a time (search, session, source), then returns from a session. Editing search and dismissing help take precedence.
+
+The following directory labels match these PowerShell profiles:
+
+| Profile | History | Session directory |
+| --- | --- | --- |
+| alpha | `~/.codex/history.jsonl` | `~/.codex/sessions` |
+| beta | `~/.codex-beta/history.jsonl` | `~/.codex-beta/sessions` |
+| gamma | `~/.codex-gamma/history.jsonl` | `~/.codex-gamma/sessions` |
+
+These are display labels, not new default sources. To load all three from PowerShell:
+
+```powershell
+.\codex-prompt-history.exe --file "$HOME\.codex\history.jsonl" --file "$HOME\.codex-beta\history.jsonl" --file "$HOME\.codex-gamma\history.jsonl"
+```
+
+Filtering and sorting retain the current record when it still matches. Reload locates the same record again even when new prompts have shifted its position. The app remains read-only and does not invoke the PowerShell functions or launch Codex sessions.
+
 ## Session history
 
 Select a prompt and press `Enter` to load its session from `~/.codex/sessions/`. The timeline shows user messages, assistant replies, tool calls, and tool results in file order, with a full text preview. Session ID, working directory, and the last recorded model appear above the timeline.
 
-JSON is typeset as indented fields and lists, including decoded multiline strings and nested JSON tool output. Each tool call and its result share one collapsed row, matched by `call_id` even when calls overlap. Groups stay at the call's position in the timeline. Select one and press `Enter` or `Space` to view input and result together. Search includes both. Reloading a session rebuilds pairs and collapses tool details again.
+JSON is typeset as indented fields and lists, including decoded multiline strings and nested JSON tool output. Each tool call and its result share one collapsed row, matched by `call_id` even when calls overlap. Groups stay at the call's position in the timeline. Select one and press `Enter` or `Space` to view input and result together. Search includes both. Reloading a session rebuilds pairs while preserving selection and expansion state when matching records still exist.
 
 Tool rows show completion/failure and elapsed time when explicitly recorded in result metadata. Otherwise they show “Result received”. Calls without a matching result show “No result recorded”; unmatched and extra results remain separate so no records disappear.
 
@@ -84,7 +107,7 @@ Consecutive tool entries are folded into one **Tool activity** group by default,
 
 Results are labeled with their originating tool name. Expanded results prioritize readable output and error output, with explicit completion/failure indicators when recorded. Content wrappers are flattened; timing, other metadata, and call references appear below the output.
 
-Use `/` to search session text, tool names, or roles; `↑` / `↓` to select an entry; `←` / `→` to scroll its content; `o` to reverse order; and `r` to reload the session. `Esc` returns to prompt history, preserving its selection and filters. While editing search, `Esc` finishes editing first; `Ctrl+U` clears the query.
+Use `/` to search session text, tool names, or roles; `↑` / `↓` to select an entry; `←` / `→` to scroll its content; `o` to reverse order; and `r` to reload the session. `Esc` first clears a session search; with no active filters it returns to prompt history, preserving its selection and filters. While editing search, `Esc` finishes editing first; `Ctrl+U` clears the query.
 
 Session files are discovered recursively by metadata ID and loaded only when opened. Missing logs show an error without closing the browser. With a custom history file, the default session directory is its sibling `sessions` folder. Override this for another directory or archived logs:
 

@@ -24,7 +24,7 @@ with tempfile.TemporaryDirectory() as directory:
     records = [
         {"type": "session_meta", "payload": {"id": "demo", "cwd": "/example"}},
         {"type": "turn_context", "payload": {"model": "demo-model"}},
-        {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hello session"}]}},
+        {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hello session\n" + '\n'.join(f'Preview line {i}' for i in range(40))}]}},
         {"type": "response_item", "payload": {"type": "function_call", "name": "example_tool", "call_id": "demo-call", "arguments": "{\"command\":\"echo hello\\nwhoami\"}"}},
         {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "demo-call", "output": "demo output"}},
         {"type": "response_item", "payload": {"type": "function_call", "name": "second_tool", "call_id": "second", "arguments": "second input"}},
@@ -53,8 +53,14 @@ with tempfile.TemporaryDirectory() as directory:
 
     try:
         assert "PROMPTHISTORY" in read_screen()
+        assert press(b't')  # source filter for the single loaded source
+        assert press(b'\x1b')  # clear source filter before opening the session
         screen = press(b'\r')
         assert "Timeline" in screen and "demo-model" in screen and "ASSISTANT" in screen and "Toolactivity" in screen, screen
+        assert press(b'\t')  # detail focus
+        assert press(b'\x1b[6~')  # page down in the preview
+        assert press(b'g')  # first preview line
+        assert press(b'\t')  # list focus; selection is unchanged
         assert "Nomatchingsessionentries" in press(b'/no-such-text')
         press(b'\x15')  # Ctrl+U clears session search
         press(b'\r')

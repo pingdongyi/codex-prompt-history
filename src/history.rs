@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct Entry {
     #[serde(skip)]
     pub source: Option<PathBuf>,
@@ -70,6 +70,27 @@ impl History {
     }
 }
 
+/// Friendly names matching the user's PowerShell CODEX_HOME profiles.
+pub fn source_name(path: &Path) -> String {
+    let directory = path
+        .parent()
+        .and_then(Path::file_name)
+        .unwrap_or_default()
+        .to_string_lossy();
+    match directory.as_ref() {
+        ".codex" => "alpha".into(),
+        ".codex-beta" => "beta".into(),
+        ".codex-gamma" => "gamma".into(),
+        _ => {
+            if directory.is_empty() {
+                path.display().to_string()
+            } else {
+                directory.into_owned()
+            }
+        }
+    }
+}
+
 pub fn timestamp(ts: i64) -> String {
     chrono::DateTime::from_timestamp(ts, 0)
         .map(|dt| {
@@ -91,6 +112,19 @@ pub fn display_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn profile_names_follow_the_provided_home_mapping() {
+        assert_eq!(source_name(Path::new(".codex/history.jsonl")), "alpha");
+        assert_eq!(source_name(Path::new(".codex-beta/history.jsonl")), "beta");
+        assert_eq!(
+            source_name(Path::new(".codex-gamma/history.jsonl")),
+            "gamma"
+        );
+        assert_eq!(
+            source_name(Path::new(".codex-alpha/history.jsonl")),
+            ".codex-alpha"
+        );
+    }
     #[test]
     fn merges_files_without_duplicate_sources_and_preserves_origins() {
         let root = std::env::temp_dir().join(format!(

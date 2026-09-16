@@ -1,6 +1,6 @@
 [package]
 name = "codex-prompt-history"
-version = "0.5.2"
+version = "0.6.0"
 edition = "2024"
 description = "A terminal browser for Codex prompt history"
 license = "MIT"
