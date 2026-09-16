@@ -114,11 +114,61 @@ pub fn failed(output: &Value) -> bool {
     inspect(output, 0)
 }
 
+/// Retain exact shell text or exact argv data; never reconstruct an executable
+/// command from the shortened display summary.
+pub fn recorded_command(input: &Value) -> Option<crate::history::RecordedCommand> {
+    fn extract(input: &Value, depth: usize) -> Option<crate::history::RecordedCommand> {
+        if depth > 8 {
+            return None;
+        }
+        if let Some(text) = input.as_str() {
+            return serde_json::from_str::<Value>(text)
+                .ok()
+                .and_then(|value| extract(&value, depth + 1));
+        }
+        for key in ["cmd", "command"] {
+            match input.get(key) {
+                Some(Value::String(text)) => {
+                    return Some(crate::history::RecordedCommand::Shell(text.clone()));
+                }
+                Some(Value::Array(args)) if args.iter().all(Value::is_string) => {
+                    return Some(crate::history::RecordedCommand::Arguments(
+                        args.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect(),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        ["parameters", "arguments", "input"]
+            .iter()
+            .find_map(|key| input.get(key).and_then(|value| extract(value, depth + 1)))
+    }
+    extract(input, 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn extracts_commands_paths_queries_and_patch_files() {
+        let original = "printf '%s' \"$HOME\"\necho 中文\n".repeat(20);
+        assert_eq!(
+            recorded_command(
+                &serde_json::json!({"arguments": serde_json::json!({"cmd":original}).to_string()})
+            ),
+            Some(crate::history::RecordedCommand::Shell(original))
+        );
+        assert_eq!(
+            recorded_command(&serde_json::json!({"command":["bash", "-lc", "echo 'a b'"]})),
+            Some(crate::history::RecordedCommand::Arguments(vec![
+                "bash".into(),
+                "-lc".into(),
+                "echo 'a b'".into()
+            ]))
+        );
         assert_eq!(
             summarize(&serde_json::json!(r#"{"cmd":"cargo test","cwd":"/work"}"#)),
             "cargo test"
@@ -145,6 +195,7 @@ mod tests {
         assert!(summary.ends_with('…'));
         assert_eq!(summary.chars().count(), 121);
         assert!(summarize(&serde_json::json!({"unknown": true})).is_empty());
+        assert!(recorded_command(&serde_json::json!({"file_path":"src/main.rs"})).is_none());
     }
     #[test]
     fn errors_need_metadata_not_error_words_in_output() {

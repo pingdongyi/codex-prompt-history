@@ -35,6 +35,7 @@ pub struct App {
     pub transcript: Option<Box<App>>,
     pub session_source: Option<std::path::PathBuf>,
     pub session_info: String,
+    pub session_id: Option<String>,
     pub expanded_tools: std::collections::HashSet<usize>,
     pub expanded_groups: std::collections::HashSet<usize>,
     pub groups: std::collections::BTreeMap<usize, std::ops::Range<usize>>,
@@ -68,6 +69,7 @@ impl App {
             transcript: None,
             session_source: None,
             session_info: String::new(),
+            session_id: None,
             expanded_tools: std::collections::HashSet::new(),
             expanded_groups: std::collections::HashSet::new(),
             groups: std::collections::BTreeMap::new(),
@@ -86,6 +88,7 @@ impl App {
     pub fn from_session(session: crate::session::Session) -> Self {
         let mut app = Self::new(session.history);
         app.session_source = Some(session.path);
+        app.session_id = (!session.id.is_empty()).then_some(session.id);
         app.session_info = session.info;
         app.filter();
         app
@@ -706,6 +709,7 @@ mod tests {
             },
             Entry {
                 tool: Some(crate::history::ToolInfo {
+                    command: None,
                     summary: "one".into(),
                     failed: true,
                 }),
@@ -716,6 +720,7 @@ mod tests {
             },
             Entry {
                 tool: Some(crate::history::ToolInfo {
+                    command: None,
                     summary: "ok".into(),
                     failed: false,
                 }),
@@ -726,6 +731,7 @@ mod tests {
             },
             Entry {
                 tool: Some(crate::history::ToolInfo {
+                    command: None,
                     summary: "two".into(),
                     failed: true,
                 }),

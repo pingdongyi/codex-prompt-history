@@ -299,7 +299,8 @@ impl SessionCache {
     }
 }
 fn session_bytes(session: &Session) -> usize {
-    session.info.capacity()
+    session.id.capacity()
+        + session.info.capacity()
         + session.history.entries.capacity() * std::mem::size_of::<crate::history::Entry>()
         + session
             .history

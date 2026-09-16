@@ -11,6 +11,7 @@ use std::{
 pub struct Session {
     pub history: History,
     pub info: String,
+    pub id: String,
     pub path: PathBuf,
 }
 
@@ -98,6 +99,7 @@ impl Session {
     ) -> Result<Self> {
         let mut history = History::default();
         let mut info = String::new();
+        let mut id = String::new();
         let mut model = String::new();
         let mut fallback = Vec::new();
         let mut has_messages = false;
@@ -121,6 +123,12 @@ impl Session {
                 .map_or(0, |t| t.timestamp());
             match value["type"].as_str().unwrap_or_default() {
                 "session_meta" => {
+                    id = p["id"]
+                        .as_str()
+                        .filter(|id| !id.is_empty())
+                        .or(p["session_id"].as_str())
+                        .unwrap_or_default()
+                        .to_owned();
                     info = format!(
                         "Session: {}\nDirectory: {}",
                         p["id"]
@@ -175,6 +183,10 @@ impl Session {
                             let call_id = string(p, "call_id");
                             calls.push((history.entries.len(), call_id));
                             tool = Some(crate::history::ToolInfo {
+                                command: p
+                                    .get("arguments")
+                                    .or_else(|| p.get("input"))
+                                    .and_then(crate::tool_summary::recorded_command),
                                 summary: p
                                     .get("arguments")
                                     .or_else(|| p.get("input"))
@@ -194,6 +206,7 @@ impl Session {
                             let call_id = string(p, "call_id");
                             let failed = p.get("output").is_some_and(crate::tool_summary::failed);
                             tool = Some(crate::history::ToolInfo {
+                                command: None,
                                 summary: String::new(),
                                 failed,
                             });
@@ -258,6 +271,7 @@ impl Session {
         Ok(Self {
             history,
             info,
+            id,
             path: path.to_path_buf(),
         })
     }

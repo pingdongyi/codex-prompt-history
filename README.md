@@ -54,6 +54,9 @@ Archives and `SHA256SUMS` are written to `dist/`. Verify downloads on Linux with
 | Key | Action |
 | --- | --- |
 | `Enter` | Open the selected prompt's session timeline |
+| `y` | Copy the complete selected record content |
+| `Y` | Copy the real session ID (also works on session group headers) |
+| `C` | Copy the recorded tool command, preserving line breaks and quoting |
 | `Tab` / `Shift+Tab` | Switch focus between list and details |
 | `a` | Focus / leave activity chart (prompt history) |
 | `w` | Cycle 7-day / 30-day / all-time activity range |
@@ -75,7 +78,7 @@ Archives and `SHA256SUMS` are written to `dist/`. Verify downloads on Linux with
 | `?` | Show keyboard help |
 | `q` / `Ctrl+C` | Quit |
 
-The activity chart follows source, search, and session filters; the selected date filters the list while the chart keeps the surrounding days visible. Search matches literal substrings in prompt text or session IDs. Reload is manual; a failed reload preserves the current data. The app only reads history and never writes it or sends it anywhere.
+The activity chart follows source, search, and session filters; the selected date filters the list while the chart keeps the surrounding days visible. Search matches literal substrings in prompt text or session IDs. Reload is manual; a failed reload preserves the current data. History and session files are read-only; content is copied out only when a copy shortcut is explicitly pressed.
 
 Repeat `--file` to merge histories in timestamp order. Without `--file`, only `~/.codex/history.jsonl` is loaded; other directories are never discovered automatically. Multi-file views label each prompt's source. Session filtering distinguishes identical session IDs from different files, and `Enter` opens the source file's sibling `sessions` directory. `--sessions-dir` explicitly overrides that directory for all sources. Repeating the same file loads it once. Every requested file must be readable; reload (`r`) refreshes all sources together and preserves the current data if any file cannot be read.
 
@@ -105,7 +108,7 @@ These are display labels, not new default sources. To load all three from PowerS
 .\codex-prompt-history.exe --file "$HOME\.codex\history.jsonl" --file "$HOME\.codex-beta\history.jsonl" --file "$HOME\.codex-gamma\history.jsonl"
 ```
 
-Filtering and sorting retain the current record when it still matches. Reload locates the same record again even when new prompts have shifted its position. The app remains read-only and does not invoke the PowerShell functions or launch Codex sessions.
+Filtering and sorting retain the current record when it still matches. Reload locates the same record again even when new prompts have shifted its position. History and session files remain read-only; the app does not invoke the PowerShell functions or launch Codex sessions.
 
 ## Session history
 
@@ -132,6 +135,14 @@ codex-prompt-history --sessions-dir /path/to/sessions
 ```
 
 The viewer supports response-item messages and function/custom tool records, plus older event-only message logs. It avoids mirrored event-message duplicates. Non-text attachments appear as labels. System/developer instructions, reasoning records, and unrelated telemetry are omitted. Malformed JSON lines are skipped and counted. It displays the selected log only; fork ancestors are not reconstructed. Session entries are held in memory.
+
+## Clipboard
+
+Copying is triggered only by `y`, `Y`, or `C` outside search editing. The list's shortened summaries are never used as copy payloads. `C` uses recorded `cmd` / `command` values; when the record contains an argv array, it copies a lossless JSON array and reports that format instead of inventing shell quoting. Records without a command, and group headers without individual content, show an explanatory message.
+
+The default `--clipboard auto` uses a native system clipboard locally, falling back to an OSC52 terminal request when unavailable. Over SSH it uses the terminal directly so the request can reach the user's terminal host. Choose `--clipboard native` to require the system clipboard or `--clipboard terminal` to always use OSC52. Native operations run on a separate worker to keep the UI responsive. This application never runs copied commands and writes no clipboard temp files.
+
+OSC52 requires support and permission in the terminal (and any multiplexer). Its success cannot be acknowledged reliably, so the UI reports “Copy request sent”, not “Copied”. Terminal requests above 100 KiB are rejected without truncation; native mode has no application-imposed size limit. Text containing NUL bytes is rejected. On Linux, native clipboard contents may cease to be available when the app exits unless a clipboard manager retains them; the clipboard object stays alive while the app runs. See the [clipboard library's platform notes](https://docs.rs/arboard/latest/arboard/struct.Clipboard.html) for ownership behavior.
 
 ## Background loading and memory cache
 

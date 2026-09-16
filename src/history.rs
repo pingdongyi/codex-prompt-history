@@ -21,6 +21,13 @@ pub struct Entry {
 pub struct ToolInfo {
     pub summary: String,
     pub failed: bool,
+    pub command: Option<RecordedCommand>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecordedCommand {
+    Shell(String),
+    Arguments(Vec<String>),
 }
 
 #[derive(Clone, Default)]

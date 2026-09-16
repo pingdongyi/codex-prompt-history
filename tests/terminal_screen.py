@@ -1,4 +1,5 @@
 """Small VT screen decoder for the Crossterm sequences used by our PTY fixtures."""
+import base64
 import codecs
 import re
 import unicodedata
@@ -10,6 +11,7 @@ class Screen:
         self.cells = [[' '] * width for _ in range(height)]
         self.x = self.y = 0
         self.pending = ''
+        self.clipboard = []
         self.decoder = codecs.getincrementaldecoder('utf-8')('replace')
 
     def feed(self, data):
@@ -20,6 +22,19 @@ class Screen:
             if char == '\x1b':
                 if index + 1 >= len(self.pending):
                     break
+                if self.pending[index + 1] == ']':
+                    ends = [(self.pending.find(end, index + 2), len(end)) for end in ('\x07', '\x1b\\')]
+                    ends = [(position, size) for position, size in ends if position >= 0]
+                    if not ends:
+                        break
+                    end, size = min(ends)
+                    value = self.pending[index + 2:end]
+                    if value.startswith('52;'):
+                        encoded = value.split(';', 2)[2]
+                        if encoded != '?':
+                            self.clipboard.append(base64.b64decode(encoded, validate=True).decode('utf-8'))
+                    index = end + size
+                    continue
                 if self.pending[index + 1] == '[':
                     match = re.match(r'\x1b\[([0-?]*)([ -/]*)([@-~])', self.pending[index:])
                     if match is None:

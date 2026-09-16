@@ -1,5 +1,6 @@
 mod activity;
 mod app;
+mod clipboard;
 mod formatting;
 mod history;
 mod loader;
@@ -33,6 +34,9 @@ struct Args {
     /// Session log directory (defaults to sessions beside the history file)
     #[arg(long)]
     sessions_dir: Option<PathBuf>,
+    /// Clipboard backend: auto uses native locally and terminal OSC52 over SSH
+    #[arg(long, value_enum, default_value_t = clipboard::Mode::Auto)]
+    clipboard: clipboard::Mode,
 }
 
 fn main() -> Result<()> {
@@ -56,6 +60,7 @@ fn main() -> Result<()> {
         bail!("An interactive terminal is required. Run codex-prompt-history in a terminal.");
     }
     let mut loader = loader::Loader::new()?;
+    let mut clipboard = clipboard::Clipboard::new(args.clipboard)?;
     start_load(&mut app, &mut loader, loader::Job::History(paths.clone()));
     let mut terminal = ratatui::init();
     let result = run(
@@ -64,6 +69,7 @@ fn main() -> Result<()> {
         &paths,
         args.sessions_dir.as_deref(),
         &mut loader,
+        &mut clipboard,
     );
     ratatui::restore();
     result
@@ -75,9 +81,29 @@ fn run(
     paths: &[PathBuf],
     sessions_dir: Option<&std::path::Path>,
     loader: &mut loader::Loader,
+    clipboard: &mut clipboard::Clipboard,
 ) -> Result<()> {
     loop {
         apply_load_events(root, loader);
+        if let Some(outcome) = clipboard.poll() {
+            let message = match outcome {
+                clipboard::Outcome::Native(label) => format!("Copied {label} to system clipboard"),
+                clipboard::Outcome::Terminal(selection) => {
+                    match clipboard::terminal_copy(&mut io::stdout(), &selection.text) {
+                        Ok(()) => format!(
+                            "Copy request sent for {} (OSC52; terminal support required)",
+                            selection.label
+                        ),
+                        Err(error) => format!("Copy failed: {error}"),
+                    }
+                }
+                clipboard::Outcome::Error(error) => format!("Copy failed: {error}"),
+            };
+            match root.transcript.as_deref_mut() {
+                Some(app) => app.status = message,
+                None => root.status = message,
+            };
+        }
         terminal.draw(|frame| match root.transcript.as_deref_mut() {
             Some(app) => ui::draw(frame, app),
             None => ui::draw(frame, root),
@@ -175,6 +201,23 @@ fn run(
             continue;
         }
         match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Char('C') => {
+                let kind = match key.code {
+                    KeyCode::Char('Y') => clipboard::Kind::SessionId,
+                    KeyCode::Char('C') => clipboard::Kind::Command,
+                    _ => clipboard::Kind::Content,
+                };
+                if clipboard.pending {
+                    app.status = "A clipboard request is already in progress".into();
+                } else {
+                    match clipboard::selection(app, kind)
+                        .and_then(|selection| clipboard.copy(selection))
+                    {
+                        Ok(()) => app.status = "Copying…".into(),
+                        Err(error) => app.status = format!("Copy unavailable: {error}"),
+                    }
+                }
+            }
             KeyCode::Char('c') if app.session_source.is_some() => app.collapse_groups(),
             KeyCode::Char(']') if app.session_source.is_some() => app.jump_failure(true),
             KeyCode::Char('[') if app.session_source.is_some() => app.jump_failure(false),
@@ -284,6 +327,7 @@ fn apply_load_events(root: &mut App, loader: &mut loader::Loader) {
                             .filter(|app| app.session_source.as_ref() == Some(&session.path))
                         {
                             app.replace_history(session.history);
+                            app.session_id = (!session.id.is_empty()).then_some(session.id);
                             app.session_info = session.info;
                             app.status = "Session reloaded".into();
                         }

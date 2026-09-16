@@ -676,9 +676,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(if transcript {
-                " Tab focus  [/] failed tools  / search  Enter fold  c fold all  Esc back  ? help  q quit"
+                " y content  Y session ID  C command  [/] failed  / search  Tab focus  ? help  q quit"
             } else {
-                " a dates  w range  d clear date  Tab focus  / search  s session  t source  ? help  q quit"
+                " y content  Y session ID  a dates  Tab focus  / search  s session  t source  ? help  q quit"
             }),
             Line::styled(display_text(&app.status), Style::default().fg(if app.loading { ACCENT } else { MUTED })),
         ]),
@@ -691,7 +691,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
 fn help(frame: &mut Frame, area: Rect, transcript: bool) {
     let width = area.width.min(64);
-    let height = area.height.min(28);
+    let height = area.height.min(29);
     let popup = Rect::new(
         (area.width - width) / 2,
         (area.height - height) / 2,
@@ -747,6 +747,7 @@ fn help(frame: &mut Frame, area: Rect, transcript: bool) {
                 "Clear search, session, date, source"
             },
         ),
+        ("y / Y / C", "Copy content / session ID / command"),
         ("Esc (loading)", "Cancel background load"),
         ("q / Ctrl+C", "Quit"),
     ];
@@ -783,6 +784,7 @@ mod tests {
     fn tool_summary_leaves_room_for_failure_status() {
         let entry = Entry {
             tool: Some(crate::history::ToolInfo {
+                command: None,
                 summary: "cargo test 中文路径".repeat(20),
                 failed: true,
             }),
@@ -800,6 +802,7 @@ mod tests {
     #[test]
     fn grouped_tools_are_adjacent_and_selected_content_is_not_cleared() {
         let mut app = App::from_session(crate::session::Session {
+            id: "demo".into(),
             history: History {
                 entries: vec![
                     Entry {

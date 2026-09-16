@@ -36,7 +36,7 @@ with tempfile.TemporaryDirectory() as directory:
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 36, 120, 0, 0))
     before = termios.tcgetattr(slave)
     executable = os.environ.get("HISTORY_BINARY", "target/debug/codex-prompt-history")
-    proc = subprocess.Popen([executable, "--file", str(history)], stdin=slave, stdout=slave, stderr=slave, env=dict(os.environ, TERM="xterm-256color"))
+    proc = subprocess.Popen([executable, "--file", str(history), "--clipboard", "terminal"], stdin=slave, stdout=slave, stderr=slave, env=dict(os.environ, TERM="xterm-256color"))
 
     screen = Screen(120, 36)
 
@@ -61,6 +61,10 @@ with tempfile.TemporaryDirectory() as directory:
 
     try:
         assert "PROMPTHISTORY" in wait_for("Historyreloaded")
+        press(b'y'); wait_for("Copyrequestsentforrecordcontent")
+        assert screen.clipboard[-1] == "Hello session"
+        press(b'Y'); wait_for("CopyrequestsentforsessionID")
+        assert screen.clipboard[-1] == "demo"
         assert press(b'a')  # activity focus
         assert press(b'g')  # beginning of the default 30-day range
         assert 'Nomatchingprompts' in press(b'\r')  # fixture records are from 1970
@@ -85,7 +89,11 @@ with tempfile.TemporaryDirectory() as directory:
         # Decode changed cells into a full screen before checking async updates.
         assert press(b'j')  # group
         assert press(b'\r')  # expand group
+        press(b'Y'); wait_for('CopyrequestsentforsessionID')
+        assert screen.clipboard[-1] == 'demo'  # group headers still have a real session ID
         assert press(b'j')  # first tool
+        press(b'C'); wait_for('Copyrequestsentfortoolcommand')
+        assert screen.clipboard[-1] == 'echo hello\nwhoami'
         assert press(b'\r')  # expand tool
         assert press(b' ')  # collapse tool
         assert press(b'c')  # collapse group
