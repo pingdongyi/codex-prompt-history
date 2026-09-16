@@ -6,6 +6,7 @@ pub enum Focus {
     #[default]
     List,
     Detail,
+    Activity,
 }
 
 pub struct App {
@@ -21,6 +22,10 @@ pub struct App {
     pub detail_page_size: usize,
     pub detail_max_scroll: usize,
     pub matched_count: usize,
+    pub activity: crate::activity::Activity,
+    pub activity_window: crate::activity::Window,
+    pub activity_cursor: chrono::NaiveDate,
+    pub date_filter: Option<chrono::NaiveDate>,
     selection_anchor: Option<(usize, usize)>,
     pub oldest_first: bool,
     pub scroll: usize,
@@ -49,6 +54,10 @@ impl App {
             detail_page_size: 1,
             detail_max_scroll: 0,
             matched_count: 0,
+            activity: crate::activity::Activity::default(),
+            activity_window: crate::activity::Window::default(),
+            activity_cursor: chrono::Local::now().date_naive(),
+            date_filter: None,
             selection_anchor: None,
             oldest_first: false,
             scroll: 0,
@@ -232,7 +241,7 @@ impl App {
                 .map_or(self.scroll, |(_, scroll)| scroll)
         };
         let query = self.query.to_lowercase();
-        self.visible = self
+        let matches: Vec<usize> = self
             .history
             .entries
             .iter()
@@ -248,6 +257,26 @@ impl App {
             })
             .map(|(i, _)| i)
             .collect();
+        self.activity.counts.clear();
+        if self.session_source.is_none() {
+            for &index in &matches {
+                if let Some(date) = crate::activity::local_date(self.history.entries[index].ts) {
+                    *self.activity.counts.entry(date).or_default() += 1;
+                }
+            }
+        }
+        self.visible = matches
+            .into_iter()
+            .filter(|&index| {
+                self.date_filter.is_none_or(|date| {
+                    crate::activity::local_date(self.history.entries[index].ts) == Some(date)
+                })
+            })
+            .collect();
+        let (start, end) = self
+            .activity
+            .bounds(self.activity_window, chrono::Local::now().date_naive());
+        self.activity_cursor = self.activity_cursor.clamp(start, end);
         self.matched_count = self.visible.len();
         if self.oldest_first {
             self.visible.reverse();
@@ -406,23 +435,64 @@ impl App {
     }
 
     pub fn navigate(&mut self, delta: isize) {
-        if self.focus == Focus::List {
-            self.move_selection(delta);
-        } else {
-            self.scroll = self
-                .scroll
-                .saturating_add_signed(delta)
-                .min(self.detail_max_scroll);
+        match self.focus {
+            Focus::List => self.move_selection(delta),
+            Focus::Detail => {
+                self.scroll = self
+                    .scroll
+                    .saturating_add_signed(delta)
+                    .min(self.detail_max_scroll)
+            }
+            Focus::Activity => {
+                let (start, end) = self
+                    .activity
+                    .bounds(self.activity_window, chrono::Local::now().date_naive());
+                let offset = self
+                    .activity_cursor
+                    .clamp(start, end)
+                    .signed_duration_since(start)
+                    .num_days() as usize;
+                let max = end.signed_duration_since(start).num_days() as usize;
+                self.activity_cursor = start
+                    .checked_add_days(chrono::Days::new(
+                        offset.saturating_add_signed(delta).min(max) as u64,
+                    ))
+                    .unwrap_or(end);
+            }
         }
     }
 
     pub fn page(&mut self, direction: isize) {
-        let size = if self.focus == Focus::Detail {
-            self.detail_page_size
-        } else {
-            10
+        let size = match self.focus {
+            Focus::Detail => self.detail_page_size,
+            Focus::Activity => 7,
+            Focus::List => 10,
         };
         self.navigate(direction * size.max(1) as isize);
+    }
+
+    pub fn focus_activity(&mut self) {
+        if self.session_source.is_none() {
+            self.focus = if self.focus == Focus::Activity {
+                Focus::List
+            } else {
+                Focus::Activity
+            };
+        }
+    }
+
+    pub fn cycle_activity_window(&mut self) {
+        self.activity_window = self.activity_window.next();
+        let (start, end) = self
+            .activity
+            .bounds(self.activity_window, chrono::Local::now().date_naive());
+        self.activity_cursor = self.activity_cursor.clamp(start, end);
+    }
+
+    pub fn apply_activity_date(&mut self) {
+        self.date_filter = Some(self.activity_cursor);
+        self.filter();
+        self.focus = Focus::List;
     }
 
     pub fn clear_one_filter(&mut self) -> bool {
@@ -431,6 +501,8 @@ impl App {
         } else if self.session.is_some() {
             self.session = None;
             self.session_origin = None;
+        } else if self.date_filter.is_some() {
+            self.date_filter = None;
         } else if self.source_filter.is_some() {
             self.source_filter = None;
         } else {
@@ -466,6 +538,9 @@ impl App {
                 "Session: {} [s]",
                 session.chars().take(8).collect::<String>()
             ));
+        }
+        if let Some(date) = self.date_filter {
+            parts.push(format!("Date: {date} [d]"));
         }
         if self.session_source.is_none() {
             parts.push(format!(
@@ -553,6 +628,73 @@ pub fn is_failed_tool(entry: &Entry) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn date_filter_uses_local_days_without_hiding_the_chart_context() {
+        let today = chrono::Local::now().date_naive();
+        let yesterday = today.pred_opt().unwrap();
+        let ts = |date: chrono::NaiveDate| {
+            date.and_hms_opt(12, 0, 0)
+                .unwrap()
+                .and_local_timezone(chrono::Local)
+                .earliest()
+                .unwrap()
+                .timestamp()
+        };
+        let alpha = std::path::PathBuf::from(".codex/history.jsonl");
+        let beta = std::path::PathBuf::from(".codex-beta/history.jsonl");
+        let mut a = App::new(History {
+            entries: vec![
+                Entry {
+                    tool: None,
+                    source: Some(alpha.clone()),
+                    session_id: "same".into(),
+                    ts: ts(today),
+                    text: "today alpha".into(),
+                },
+                Entry {
+                    tool: None,
+                    source: Some(beta.clone()),
+                    session_id: "same".into(),
+                    ts: ts(today),
+                    text: "today beta".into(),
+                },
+                Entry {
+                    tool: None,
+                    source: Some(alpha),
+                    session_id: "same".into(),
+                    ts: ts(yesterday),
+                    text: "yesterday".into(),
+                },
+            ],
+            skipped: 0,
+        });
+        a.focus_activity();
+        a.navigate(-1);
+        assert_eq!(a.activity_cursor, yesterday);
+        assert_eq!(a.activity.count(yesterday), 1);
+        a.apply_activity_date();
+        assert_eq!(a.focus, Focus::List);
+        assert_eq!(a.visible, vec![2]);
+        assert_eq!(a.activity.count(today), 2);
+        assert!(a.filter_summary().contains(&format!("Date: {yesterday}")));
+        a.source_filter = Some(beta);
+        a.filter();
+        assert!(a.visible.is_empty());
+        assert_eq!(a.activity.count(today), 1);
+        assert!(a.clear_one_filter());
+        assert_eq!(a.date_filter, None);
+        assert_eq!(a.visible, vec![1]);
+        a.focus_activity();
+        a.navigate(isize::MAX);
+        assert_eq!(a.activity_cursor, today);
+        a.navigate(isize::MIN);
+        assert_eq!(
+            a.activity_cursor,
+            today.checked_sub_days(chrono::Days::new(29)).unwrap()
+        );
+        a.apply_activity_date();
+        assert!(a.visible.is_empty());
+    }
     #[test]
     fn failure_navigation_expands_groups_wraps_and_respects_search_and_order() {
         let mut a = app();

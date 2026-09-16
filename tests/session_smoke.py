@@ -53,6 +53,15 @@ with tempfile.TemporaryDirectory() as directory:
 
     try:
         assert "PROMPTHISTORY" in read_screen()
+        assert press(b'a')  # activity focus
+        assert press(b'g')  # beginning of the default 30-day range
+        assert 'Nomatchingprompts' in press(b'\r')  # fixture records are from 1970
+        assert press(b'd')  # clear date filter, retaining all history
+        assert press(b'w')  # all-time chart
+        assert press(b'a')
+        assert press(b'g')  # exact date of fixture records
+        assert press(b'\r')  # filter that date
+        assert press(b'd')
         assert press(b't')  # source filter for the single loaded source
         assert press(b'\x1b')  # clear source filter before opening the session
         screen = press(b'\r')

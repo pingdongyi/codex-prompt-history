@@ -55,6 +55,9 @@ Archives and `SHA256SUMS` are written to `dist/`. Verify downloads on Linux with
 | --- | --- |
 | `Enter` | Open the selected prompt's session timeline |
 | `Tab` / `Shift+Tab` | Switch focus between list and details |
+| `a` | Focus / leave activity chart (prompt history) |
+| `w` | Cycle 7-day / 30-day / all-time activity range |
+| `d` | Clear date filter |
 | `↑` / `↓`, `k` / `j` | Navigate the focused pane |
 | `Home` / `End`, `g` / `G` | First / last item or detail line |
 | `PgUp` / `PgDn` | Move ten list items or one page of details |
@@ -68,17 +71,25 @@ Archives and `SHA256SUMS` are written to `dist/`. Verify downloads on Linux with
 | `[` / `]` | Previous / next failed tool in a session (wraps) |
 | `o` | Toggle newest / oldest first |
 | `r` | Reload the file |
-| `Esc` | Clear search, then session, then source; return from a session when no filters remain |
+| `Esc` | Leave activity focus; otherwise clear search, session, date, then source; return from a session when no filters remain |
 | `?` | Show keyboard help |
 | `q` / `Ctrl+C` | Quit |
 
-The activity chart follows the current filters. Search matches literal substrings in prompt text or session IDs. Reload is manual; a failed reload preserves the current data. The app only reads history and never writes it or sends it anywhere.
+The activity chart follows source, search, and session filters; the selected date filters the list while the chart keeps the surrounding days visible. Search matches literal substrings in prompt text or session IDs. Reload is manual; a failed reload preserves the current data. The app only reads history and never writes it or sends it anywhere.
 
 Repeat `--file` to merge histories in timestamp order. Without `--file`, only `~/.codex/history.jsonl` is loaded; other directories are never discovered automatically. Multi-file views label each prompt's source. Session filtering distinguishes identical session IDs from different files, and `Enter` opens the source file's sibling `sessions` directory. `--sessions-dir` explicitly overrides that directory for all sources. Repeating the same file loads it once. Every requested file must be readable; reload (`r`) refreshes all sources together and preserves the current data if any file cannot be read.
 
+## Activity dates
+
+The chart defaults to the last 30 local-calendar days, including today. Press `a` to focus it; `←` / `→` moves one day, Page Up/Down moves seven days, and Home/End selects the range endpoints. The marker and bottom label show the exact date and matching prompt count, including zero-count days. `Enter` filters the prompt list to that local date and returns focus to the list. `d` clears the date filter. `Esc` leaves chart focus first.
+
+`w` cycles 7 days, 30 days, and all time (earliest matching record through today). Changing the chart range alone does not restrict the list or clear an existing date filter. Source/search/session filters apply to both chart and list; the date filter applies only to the list so other days remain available for selection. Multi-file histories are counted together. Future dates are outside the chart ending today.
+
+When the range contains more days than terminal columns, each column displays the **maximum daily count** in its interval. The header total and selected-day count remain exact; the chart label indicates this compressed mode. Sparse daily counts avoid allocating one entry for every date in a long history.
+
 ## Navigation and source profiles
 
-The focused pane has a cyan border. `Tab` switches between the list and details; arrows, Home/End, and Page Up/Down operate on that pane. The filter strip shows active search, session, source, and matching record counts. `x` clears only search; `s` toggles session filtering; `t` cycles loaded sources and clears a source-specific session filter. `Esc` clears one filter at a time (search, session, source), then returns from a session. Editing search and dismissing help take precedence.
+The focused pane has a cyan border. `Tab` switches between the list and details; arrows, Home/End, and Page Up/Down operate on that pane. The filter strip shows active search, session, source, and matching record counts. `x` clears only search; `s` toggles session filtering; `t` cycles loaded sources and clears a source-specific session filter. `Esc` clears one filter at a time (search, session, date, source), then returns from a session. Editing search and dismissing help take precedence.
 
 The following directory labels match these PowerShell profiles:
 

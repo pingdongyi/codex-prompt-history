@@ -1,3 +1,4 @@
+mod activity;
 mod app;
 mod formatting;
 mod history;
@@ -93,6 +94,10 @@ fn run(
                 None => &mut *root,
             };
             if !current.searching && !current.help {
+                if current.focus == app::Focus::Activity {
+                    current.focus = app::Focus::List;
+                    continue;
+                }
                 if current.clear_one_filter() {
                     continue;
                 }
@@ -104,6 +109,10 @@ fn run(
         }
         if key.code == KeyCode::Enter && root.transcript.is_none() && !root.searching && !root.help
         {
+            if root.focus == app::Focus::Activity {
+                root.apply_activity_date();
+                continue;
+            }
             if let Some(entry) = root.selected() {
                 let directory = session_directory(entry, sessions_dir);
                 match session::find(&directory, &entry.session_id)
@@ -154,6 +163,14 @@ fn run(
                 app.toggle_tool()
             }
             KeyCode::Char('q') => break,
+            KeyCode::Char('a') if app.session_source.is_none() => app.focus_activity(),
+            KeyCode::Char('w') if app.session_source.is_none() => app.cycle_activity_window(),
+            KeyCode::Char('d') if app.session_source.is_none() => {
+                app.date_filter = None;
+                app.filter();
+            }
+            KeyCode::Left if app.focus == app::Focus::Activity => app.navigate(-1),
+            KeyCode::Right if app.focus == app::Focus::Activity => app.navigate(1),
             KeyCode::Tab | KeyCode::BackTab => app.toggle_focus(),
             KeyCode::Char('t') if app.session_source.is_none() => app.cycle_source(),
             KeyCode::Char('x') => {

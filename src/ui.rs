@@ -2,7 +2,7 @@ use crate::{
     app::{App, Focus},
     history::{display_text, timestamp},
 };
-use chrono::{Days, Local};
+use chrono::Local;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -107,7 +107,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     let rows = Layout::vertical([
         Constraint::Length(2),
-        Constraint::Length(if transcript { 5 } else { 4 }),
+        Constraint::Length(5),
         Constraint::Length(3),
         Constraint::Length(2),
         Constraint::Min(3),
@@ -165,35 +165,59 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         );
     } else {
         let today = Local::now().date_naive();
-        let mut activity = [0u64; 30];
-        for &index in &app.visible {
-            if let Some(dt) = chrono::DateTime::from_timestamp(app.history.entries[index].ts, 0) {
-                let age = today
-                    .signed_duration_since(dt.with_timezone(&Local).date_naive())
-                    .num_days();
-                if (0..30).contains(&age) {
-                    activity[29 - age as usize] += 1;
-                }
-            }
-        }
-        let start = today.checked_sub_days(Days::new(29)).unwrap_or(today);
+        let (start, end) = app.activity.bounds(app.activity_window, today);
+        app.activity_cursor = app.activity_cursor.clamp(start, end);
         let block = panel(format!(
-            " Activity · {start} → {today} · {} matching prompts ",
-            activity.iter().sum::<u64>()
-        ));
-        let width = block.inner(rows[1]).width as usize;
-        // Repeat each day's height across its share of the available columns.
-        // Keep the original daily counts for the total and vertical scale.
-        let bars: Vec<u64> = (0..width)
-            .map(|column| activity[column * activity.len() / width])
-            .collect();
+            " Activity · {start} → {end} · {} matching prompts ",
+            app.activity.total(start, end)
+        ))
+        .border_style(Style::default().fg(if app.focus == Focus::Activity {
+            ACCENT
+        } else {
+            MUTED
+        }));
+        let inner = block.inner(rows[1]);
+        let width = inner.width as usize;
+        let days = end.signed_duration_since(start).num_days() as usize + 1;
+        let label = format!(
+            " {} · {} prompts · {}{} ",
+            app.activity_cursor,
+            app.activity.count(app.activity_cursor),
+            app.activity_window.label(),
+            if days > width {
+                " · daily peak/column"
+            } else {
+                ""
+            }
+        );
         frame.render_widget(
-            Sparkline::default()
-                .block(block)
-                .data(bars)
-                .style(Style::default().fg(ACCENT)),
+            block.title_bottom(Span::styled(label, Style::default().fg(ACCENT))),
             rows[1],
         );
+        let plot = Rect::new(
+            inner.x,
+            inner.y,
+            inner.width,
+            inner.height.saturating_sub(1),
+        );
+        frame.render_widget(
+            Sparkline::default()
+                .data(app.activity.bars(start, end, width))
+                .style(Style::default().fg(ACCENT)),
+            plot,
+        );
+        if inner.width > 0 && inner.height > 0 {
+            let column =
+                crate::activity::Activity::cursor_column(start, end, app.activity_cursor, width);
+            frame.render_widget(
+                Paragraph::new("▲").style(Style::default().fg(if app.focus == Focus::Activity {
+                    Color::Yellow
+                } else {
+                    MUTED
+                })),
+                Rect::new(inner.x + column as u16, inner.bottom() - 1, 1, 1),
+            );
+        }
     }
     let search_title = if app.searching {
         " Search · typing · Enter to finish "
@@ -247,10 +271,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 format!(
                     " {count}/{} records · Focus: {} · Tab switches panes",
                     app.history.entries.len(),
-                    if app.focus == Focus::List {
-                        "List"
-                    } else {
-                        "Details"
+                    match app.focus {
+                        Focus::List => "List",
+                        Focus::Detail => "Details",
+                        Focus::Activity => "Activity (←→ day · Enter filter · w range)",
                     }
                 ),
                 Style::default().fg(MUTED),
@@ -652,7 +676,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Line::from(if transcript {
                 " Tab focus  [/] failed tools  / search  Enter fold  c fold all  Esc back  ? help  q quit"
             } else {
-                " Tab focus  / search  x clear  s session  t source  Enter open  ? help  q quit"
+                " a dates  w range  d clear date  Tab focus  / search  s session  t source  ? help  q quit"
             }),
             Line::styled(display_text(&app.status), Style::default().fg(MUTED)),
         ]),
@@ -665,7 +689,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
 fn help(frame: &mut Frame, area: Rect, transcript: bool) {
     let width = area.width.min(64);
-    let height = area.height.min(24);
+    let height = area.height.min(27);
     let popup = Rect::new(
         (area.width - width) / 2,
         (area.height - height) / 2,
@@ -683,8 +707,10 @@ fn help(frame: &mut Frame, area: Rect, transcript: bool) {
             },
         ),
         ("Tab / Shift+Tab", "Switch list / details focus"),
+        ("a · w · d", "Activity focus · range · clear date"),
+        ("←/→ (activity)", "Previous / next day; Enter filters"),
         ("↑/↓ or j/k", "Navigate focused pane"),
-        ("Home/End g/G", "First / last item or detail line"),
+        ("Home/End g/G", "First / last item, line, or day"),
         ("PgUp/PgDn", "Page through focused pane"),
         ("←/→ or K/J", "Scroll prompt preview"),
         ("/", "Edit live search"),
@@ -716,7 +742,7 @@ fn help(frame: &mut Frame, area: Rect, transcript: bool) {
             if transcript {
                 "Clear next filter, then go back"
             } else {
-                "Clear search, session, then source"
+                "Clear search, session, date, source"
             },
         ),
         ("q / Ctrl+C", "Quit"),
