@@ -4,6 +4,7 @@ mod clipboard;
 mod detail_find;
 mod formatting;
 mod history;
+mod listing;
 mod loader;
 mod resume;
 mod search;
@@ -162,6 +163,32 @@ fn run(
         }
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             break;
+        }
+        let current = active_app(root);
+        if current.panel.is_some() {
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => current.panel = None,
+                    KeyCode::Enter => current.panel_apply(),
+                    KeyCode::Up | KeyCode::Char('k') => current.panel_move(-1),
+                    KeyCode::Down | KeyCode::Char('j') => current.panel_move(1),
+                    KeyCode::Home => current.panel_move(isize::MIN),
+                    KeyCode::End => current.panel_move(isize::MAX),
+                    KeyCode::PageUp => {
+                        let page = current.panel.as_ref().unwrap().page;
+                        current.panel_move(-(page as isize));
+                    }
+                    KeyCode::PageDown => {
+                        let page = current.panel.as_ref().unwrap().page;
+                        current.panel_move(page as isize);
+                    }
+                    _ => {}
+                }
+            }
+            continue;
         }
         if key.code == KeyCode::Esc {
             let current = match root.transcript.as_deref_mut() {
@@ -334,6 +361,12 @@ fn run(
                 app.toggle_tool()
             }
             KeyCode::Char('q') => break,
+            KeyCode::Char('O') => app.open_order(),
+            KeyCode::Char('T') if app.session_source.is_none() => app.open_sources(),
+            KeyCode::Char('i') => {
+                app.panel = Some(listing::Panel::new(listing::PanelKind::Stats, 0))
+            }
+            KeyCode::Char('z') => app.reset_filters(),
             KeyCode::Char('f') => app.begin_find(),
             KeyCode::Char('F') => app.find.clear(),
             KeyCode::Char('n') => app.jump_detail_match(true),
@@ -364,8 +397,7 @@ fn run(
             KeyCode::Char('K') | KeyCode::Left => app.scroll = app.scroll.saturating_sub(3),
             KeyCode::Char('s') if app.session_source.is_none() => app.toggle_session(),
             KeyCode::Char('o') => {
-                app.oldest_first = !app.oldest_first;
-                app.filter();
+                app.set_order(app.order, !app.oldest_first);
             }
             KeyCode::Char('?') | KeyCode::F(1) => {
                 app.help = true;

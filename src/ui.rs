@@ -10,7 +10,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph, Sparkline, Wrap},
 };
-use std::collections::HashSet;
 
 const ACCENT: Color = Color::Cyan;
 const MUTED: Color = Color::DarkGray;
@@ -114,13 +113,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Constraint::Length(2),
     ])
     .split(area);
-    let sessions = app
-        .history
-        .entries
-        .iter()
-        .map(|e| (&e.source, &e.session_id))
-        .collect::<HashSet<_>>()
-        .len();
+    let sessions = app.totals.sessions;
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(vec![
@@ -146,9 +139,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     )
                 } else {
                     format!(
-                        " {} prompts · {} sessions · {} malformed lines skipped",
+                        " Loaded: {} prompts · {} sessions · {} sources · {} malformed lines skipped",
                         app.history.entries.len(),
                         sessions,
+                        app.totals.sources.len(),
                         app.history.skipped
                     )
                 },
@@ -313,14 +307,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             })
         })
         .collect();
-    let multiple_sources = app
-        .history
-        .entries
-        .iter()
-        .filter_map(|entry| entry.source.as_ref())
-        .collect::<HashSet<_>>()
-        .len()
-        > 1;
+    let multiple_sources = app.totals.sources.len() > 1;
     let items: Vec<ListItem> = app
         .visible
         .iter()
@@ -445,17 +432,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         if transcript { "Timeline" } else { "Prompts" },
         app.list.selected().map_or(0, |i| i + 1),
         app.visible.len(),
-        if transcript {
-            if app.oldest_first {
-                "reverse"
-            } else {
-                "file order"
-            }
-        } else if app.oldest_first {
-            "oldest"
-        } else {
-            "newest"
-        },
+        app.order_label(),
         if app.session.is_some() {
             " · session filter"
         } else {
@@ -590,7 +567,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Line::from(if transcript {
                 " R resume  f find  n/N match  y copy  [/] failed  / filter  ? help  q quit"
             } else {
-                " R resume  f find  n/N match  y copy  a dates  / filter  t source  ? help  q quit"
+                " O sort  T source  i stats  z reset  R resume  / filter  ? help  q quit"
             }),
             Line::styled(
                 display_text(&app.status),
@@ -601,6 +578,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     );
     if app.help {
         help(frame, area, app);
+    }
+    if app.panel.is_some() {
+        draw_panel(frame, area, app);
     }
 }
 
@@ -704,6 +684,235 @@ fn detail_lines(app: &App, multiple_sources: bool) -> Vec<Line<'static>> {
     lines
 }
 
+fn draw_panel(frame: &mut Frame, area: Rect, app: &mut App) {
+    use crate::listing::PanelKind;
+    let panel = app.panel.as_ref().unwrap();
+    let title = match &panel.kind {
+        PanelKind::Order => " Sort order ",
+        PanelKind::Sources(_) => " Choose source · search/date counts ",
+        PanelKind::Stats => " Statistics · current filters ",
+    };
+    let height = match &panel.kind {
+        PanelKind::Order => {
+            if app.session_source.is_some() {
+                7
+            } else {
+                11
+            }
+        }
+        _ => 28,
+    }
+    .min(area.height.saturating_sub(2));
+    let width = area.width.saturating_sub(2).min(88);
+    let popup = Rect::new(
+        (area.width - width) / 2,
+        (area.height - height) / 2,
+        width,
+        height,
+    );
+    let footer = if matches!(panel.kind, PanelKind::Stats) {
+        " ↑↓ / PgUp PgDn scroll · Esc close "
+    } else {
+        " ↑↓ choose · Enter apply · Esc cancel "
+    };
+    let block = panel_block(title).title_bottom(Span::styled(footer, Style::default().fg(ACCENT)));
+    let inner = block.inner(popup);
+    frame.render_widget(Clear, popup);
+    let wrap_width = inner.width.saturating_sub(2).max(1) as usize;
+    let mut texts = Vec::new();
+    let items: Option<Vec<ListItem>> = match &panel.kind {
+        PanelKind::Order => {
+            let choices: &[&str] = if app.session_source.is_some() {
+                &["File order", "Reverse file order"]
+            } else {
+                &[
+                    "Newest prompts first",
+                    "Oldest prompts first",
+                    "Sessions: most recent matching activity",
+                    "Sessions: least recent matching activity",
+                    "Group by most matching prompts",
+                    "Group by fewest matching prompts",
+                ]
+            };
+            Some(choices.iter().map(|text| ListItem::new(*text)).collect())
+        }
+        PanelKind::Sources(choices) => Some(
+            choices
+                .iter()
+                .map(|(source, count)| {
+                    let name = source
+                        .as_deref()
+                        .map(crate::history::source_name)
+                        .unwrap_or_else(|| "All sources".into());
+                    let mut lines = vec![Line::from(format!("{name} · {count} matching prompts"))];
+                    if let Some(path) = source {
+                        lines.extend(
+                            textwrap::wrap(&display_text(&path.display().to_string()), wrap_width)
+                                .into_iter()
+                                .map(|line| {
+                                    Line::styled(line.into_owned(), Style::default().fg(MUTED))
+                                }),
+                        );
+                    }
+                    ListItem::new(lines)
+                })
+                .collect(),
+        ),
+        PanelKind::Stats => {
+            let stats = &app.stats;
+            let total = &app.totals;
+            texts.push(format!(
+                "Matching records: {} / {} loaded",
+                stats.records, total.records
+            ));
+            if app.session_source.is_none() {
+                texts.push(format!(
+                    "Matching sessions: {} / {} loaded",
+                    stats.sessions, total.sessions
+                ));
+                texts.push(format!(
+                    "Sources with matches: {} / {} loaded",
+                    stats.sources.len(),
+                    total.sources.len()
+                ));
+            } else {
+                texts.push(format!(
+                    "User messages: {} · Assistant replies: {}",
+                    stats.users, stats.assistants
+                ));
+                texts.push(format!(
+                    "Tool calls: {} · Unmatched results: {} · Failed: {}",
+                    stats.tools, stats.results, stats.failures
+                ));
+                texts.push("Counts include folded entries; group headers are not records.".into());
+            }
+            texts.push(format!(
+                "Active days: {} · Today: {} · Last 7 days: {} · Last 30 days: {}",
+                stats.days.len(),
+                stats.recent(1),
+                stats.recent(7),
+                stats.recent(30)
+            ));
+            texts.push(format!(
+                "First match: {}",
+                stats.first.map(timestamp).unwrap_or_else(|| "—".into())
+            ));
+            texts.push(format!(
+                "Last match: {}",
+                stats.last.map(timestamp).unwrap_or_else(|| "—".into())
+            ));
+            if let Some((date, count)) = stats.peak() {
+                texts.push(format!("Busiest matching day: {date} · {count} records"));
+            }
+            if app.session_source.is_none()
+                && let Some((source, id, count)) = &stats.busiest
+            {
+                texts.push(format!("Largest matching session: {id} · {count} prompts"));
+                if let Some(source) = source {
+                    texts.push(format!("Session source: {}", source.display()));
+                }
+            }
+            texts.push(String::new());
+            texts.push(format!(
+                "Search: {}",
+                if app.query.is_empty() {
+                    "(none)"
+                } else {
+                    &app.query
+                }
+            ));
+            texts.push(format!(
+                "Session filter: {}",
+                app.session.as_deref().unwrap_or("all")
+            ));
+            texts.push(format!(
+                "Source filter: {}",
+                app.source_filter
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "all".into())
+            ));
+            texts.push(format!(
+                "Date filter: {}",
+                app.date_filter
+                    .map(|date| date.to_string())
+                    .unwrap_or_else(|| "all dates".into())
+            ));
+            texts.push(format!("Order: {}", app.order_label()));
+            texts.push(String::new());
+            for (source, count) in &total.sources {
+                texts.push(format!(
+                    "{}: {} matching / {count} loaded",
+                    crate::history::source_name(source),
+                    stats.sources.get(source).copied().unwrap_or(0)
+                ));
+                texts.push(source.display().to_string());
+            }
+            texts.push(String::new());
+            texts.push(format!(
+                "Malformed lines skipped (loaded data): {}",
+                app.history.skipped
+            ));
+            texts.push(
+                "Statistics follow all list filters. Recent counts end today in local time.".into(),
+            );
+            texts.push(
+                "The activity chart keeps date context and excludes only the list's date filter."
+                    .into(),
+            );
+            None
+        }
+    };
+    let panel = app.panel.as_mut().unwrap();
+    if let Some(items) = items {
+        panel.page = (inner.height as usize / 2).max(1);
+        let mut state = ratatui::widgets::ListState::default()
+            .with_selected(Some(panel.selected))
+            .with_offset(panel.scroll);
+        frame.render_stateful_widget(
+            List::new(items)
+                .block(block)
+                .highlight_symbol("▎ ")
+                .highlight_style(Style::default().fg(Color::White).bg(Color::Rgb(28, 47, 62))),
+            popup,
+            &mut state,
+        );
+        panel.scroll = state.offset();
+    } else {
+        let lines: Vec<Line> = texts
+            .into_iter()
+            .flat_map(|text| {
+                if text.is_empty() {
+                    vec![Line::from("")]
+                } else {
+                    textwrap::wrap(&display_text(&text), inner.width.max(1) as usize)
+                        .into_iter()
+                        .map(|line| Line::from(line.into_owned()))
+                        .collect()
+                }
+            })
+            .collect();
+        panel.page = inner.height.saturating_sub(1).max(1) as usize;
+        panel.max_scroll = lines.len().saturating_sub(inner.height as usize);
+        panel.scroll = panel.scroll.min(panel.max_scroll);
+        frame.render_widget(
+            Paragraph::new(
+                lines
+                    .into_iter()
+                    .skip(panel.scroll)
+                    .take(inner.height as usize)
+                    .collect::<Vec<_>>(),
+            )
+            .block(block),
+            popup,
+        );
+    }
+}
+
+fn panel_block(title: &'static str) -> Block<'static> {
+    panel(title).border_style(Style::default().fg(ACCENT))
+}
+
 fn help(frame: &mut Frame, area: Rect, app: &mut App) {
     let transcript = app.session_source.is_some();
     let width = area.width.min(64);
@@ -761,7 +970,8 @@ fn help(frame: &mut Frame, area: Rect, app: &mut App) {
         ),
         ("[ / ]", "Previous / next failed tool"),
         ("R", "Resume session using its CODEX_HOME"),
-        ("o", "Reverse chronological order"),
+        ("o / O", "Reverse order / choose sorting"),
+        ("T / i / z", "Choose source / statistics / reset filters"),
         ("r", "Reload history from disk"),
         (
             "Esc",
@@ -879,6 +1089,7 @@ mod tests {
         let mut app = App::from_session(crate::session::Session {
             id: "demo".into(),
             history: History {
+                sources: Vec::new(),
                 entries: vec![
                     Entry {
                         tool: None,
@@ -934,6 +1145,7 @@ mod tests {
     #[test]
     fn tool_details_are_hidden_until_expanded() {
         let mut app = App::new(History {
+            sources: Vec::new(),
             entries: vec![Entry {
                 tool: None,
                 source: None,

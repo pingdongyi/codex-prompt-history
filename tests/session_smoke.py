@@ -63,6 +63,19 @@ with tempfile.TemporaryDirectory() as directory:
 
     try:
         assert "PROMPTHISTORY" in wait_for("Historyreloaded")
+        assert "Sortorder" in press(b'O')
+        press(b'\x1b[F'); press(b'\r')
+        assert "smallestsessions" in screen.compact()
+        press(b'O'); press(b'\x1b[H'); press(b'\r')  # restore default ordering
+        assert "Choosesource" in press(b'T')
+        press(b'\x1b[B'); press(b'\r')
+        assert f'Source:{root.name}[t]' in screen.compact()
+        press(b'z')
+        assert 'Source:all[t]' in screen.compact()
+        assert 'Matchingrecords:2/2loaded' in press(b'i')
+        press(b'\x1b[F')
+        assert "excludesonlythelist'sdatefilter." in screen.compact()
+        press(b'\x1b')
         assert "Enterapply" in press(b'\x06')  # Ctrl+F
         press(b'\x1b[200~Hello\x1b[201~')
         assert "1/2records" in screen.compact()
@@ -103,6 +116,9 @@ with tempfile.TemporaryDirectory() as directory:
         press(b'\r')
         rendered = wait_for("SESSIONHISTORY")
         assert "Timeline" in rendered and "demo-model" in rendered and "ASSISTANT" in rendered and "Toolactivity" in rendered, rendered
+        assert 'Matchingrecords:4/4loaded' in press(b'i')
+        assert 'Toolcalls:2' in screen.compact() and 'Failed:1' in screen.compact()
+        press(b'\x1b')
         press(b'/')
         assert "Search:Hello[x]" in press(b'\x1b[A')  # shared query history
         press(b'\x1b')

@@ -71,6 +71,10 @@ pub struct App {
     pub date_filter: Option<chrono::NaiveDate>,
     selection_anchor: Option<(usize, usize)>,
     pub oldest_first: bool,
+    pub order: crate::listing::Sort,
+    pub totals: crate::listing::Stats,
+    pub stats: crate::listing::Stats,
+    pub panel: Option<crate::listing::Panel>,
     pub scroll: usize,
     pub help: bool,
     pub help_scroll: usize,
@@ -113,6 +117,10 @@ impl App {
             date_filter: None,
             selection_anchor: None,
             oldest_first: false,
+            order: crate::listing::Sort::Time,
+            totals: crate::listing::Stats::default(),
+            stats: crate::listing::Stats::default(),
+            panel: None,
             scroll: 0,
             help: false,
             help_scroll: 0,
@@ -287,6 +295,9 @@ impl App {
         app.session_source = Some(session.path);
         app.session_id = (!session.id.is_empty()).then_some(session.id);
         app.session_info = session.info;
+        app.visible.clear();
+        app.list = ListState::default();
+        app.selection_anchor = None;
         app.filter();
         app
     }
@@ -481,6 +492,16 @@ impl App {
             .bounds(self.activity_window, chrono::Local::now().date_naive());
         self.activity_cursor = self.activity_cursor.clamp(start, end);
         self.matched_count = self.visible.len();
+        self.stats =
+            crate::listing::Stats::build(&self.history.entries, self.visible.iter().copied());
+        self.totals =
+            crate::listing::Stats::build(&self.history.entries, 0..self.history.entries.len());
+        for source in &self.history.sources {
+            self.totals.sources.entry(source.clone()).or_default();
+        }
+        if self.session_source.is_none() {
+            crate::listing::sort(&self.history.entries, &mut self.visible, self.order);
+        }
         if self.oldest_first {
             self.visible.reverse();
         }
@@ -529,6 +550,9 @@ impl App {
             .with_selected(position)
             .with_offset(position.unwrap_or(0).saturating_sub(row));
         self.scroll = if restored.is_some() { scroll } else { 0 };
+        if current.is_none() && restored.is_some() {
+            self.find.preserve_scroll();
+        }
         if let Some(index) = position.and_then(|p| self.visible.get(p)).copied() {
             self.selection_anchor = Some((index, self.scroll));
         } else if let Some(index) = selected {
@@ -544,6 +568,12 @@ impl App {
     }
 
     pub fn replace_history(&mut self, history: History) {
+        let chosen_source = self.panel.as_ref().and_then(|panel| match &panel.kind {
+            crate::listing::PanelKind::Sources(choices) => choices
+                .get(panel.selected)
+                .map(|(source, _)| source.clone()),
+            _ => None,
+        });
         let index = self
             .list
             .selected()
@@ -622,6 +652,17 @@ impl App {
             *self.list.offset_mut() = position.saturating_sub(row);
             self.scroll = scroll;
             self.find.preserve_scroll();
+        }
+        if let Some(source) = chosen_source {
+            self.open_sources();
+            if let Some(panel) = &mut self.panel
+                && let crate::listing::PanelKind::Sources(choices) = &panel.kind
+            {
+                panel.selected = choices
+                    .iter()
+                    .position(|(choice, _)| *choice == source)
+                    .unwrap_or(0);
+            }
         }
     }
 
@@ -712,12 +753,7 @@ impl App {
     }
 
     pub fn cycle_source(&mut self) {
-        let sources: std::collections::BTreeSet<_> = self
-            .history
-            .entries
-            .iter()
-            .filter_map(|e| e.source.clone())
-            .collect();
+        let sources: std::collections::BTreeSet<_> = self.totals.sources.keys().cloned().collect();
         self.source_filter = match &self.source_filter {
             None => sources.first().cloned(),
             Some(current) => sources.iter().find(|source| *source > current).cloned(),
@@ -725,6 +761,142 @@ impl App {
         self.session = None;
         self.session_origin = None;
         self.filter();
+    }
+
+    pub fn reset_filters(&mut self) {
+        self.query.clear();
+        self.session = None;
+        self.session_origin = None;
+        self.source_filter = None;
+        self.date_filter = None;
+        self.filter();
+    }
+
+    pub fn order_label(&self) -> &'static str {
+        if self.session_source.is_some() {
+            return if self.oldest_first {
+                "reverse"
+            } else {
+                "file order"
+            };
+        }
+        match (self.order, self.oldest_first) {
+            (crate::listing::Sort::Time, false) => "newest",
+            (crate::listing::Sort::Time, true) => "oldest",
+            (crate::listing::Sort::SessionRecent, false) => "recent sessions",
+            (crate::listing::Sort::SessionRecent, true) => "older sessions",
+            (crate::listing::Sort::SessionCount, false) => "largest sessions",
+            (crate::listing::Sort::SessionCount, true) => "smallest sessions",
+        }
+    }
+
+    pub fn set_order(&mut self, order: crate::listing::Sort, oldest_first: bool) {
+        if self.order == order && self.oldest_first == oldest_first {
+            return;
+        }
+        self.order = order;
+        self.oldest_first = oldest_first;
+        self.filter();
+        self.list = ListState::default().with_selected((!self.visible.is_empty()).then_some(0));
+        self.scroll = 0;
+        self.selection_anchor = self.visible.first().map(|&index| (index, 0));
+        self.find.preserve_scroll();
+    }
+
+    pub fn open_order(&mut self) {
+        let mode = if self.session_source.is_some() {
+            0
+        } else {
+            match self.order {
+                crate::listing::Sort::Time => 0,
+                crate::listing::Sort::SessionRecent => 2,
+                crate::listing::Sort::SessionCount => 4,
+            }
+        };
+        self.panel = Some(crate::listing::Panel::new(
+            crate::listing::PanelKind::Order,
+            mode + usize::from(self.oldest_first),
+        ));
+    }
+
+    pub fn open_sources(&mut self) {
+        let mut counts: std::collections::BTreeMap<_, usize> = self
+            .totals
+            .sources
+            .keys()
+            .map(|path| (path.clone(), 0))
+            .collect();
+        let query = self.query.to_lowercase();
+        for entry in &self.history.entries {
+            if matches_query(entry, &query)
+                && self
+                    .date_filter
+                    .is_none_or(|date| crate::activity::local_date(entry.ts) == Some(date))
+                && let Some(source) = &entry.source
+            {
+                *counts.entry(source.clone()).or_default() += 1;
+            }
+        }
+        let mut choices = vec![(None, counts.values().sum())];
+        choices.extend(counts.into_iter().map(|(path, count)| (Some(path), count)));
+        let selected = choices
+            .iter()
+            .position(|(source, _)| *source == self.source_filter)
+            .unwrap_or(0);
+        self.panel = Some(crate::listing::Panel::new(
+            crate::listing::PanelKind::Sources(choices),
+            selected,
+        ));
+    }
+
+    pub fn panel_move(&mut self, delta: isize) {
+        if let Some(panel) = &mut self.panel {
+            match &panel.kind {
+                crate::listing::PanelKind::Stats => {
+                    panel.scroll = panel
+                        .scroll
+                        .saturating_add_signed(delta)
+                        .min(panel.max_scroll)
+                }
+                crate::listing::PanelKind::Order => {
+                    panel.selected = panel
+                        .selected
+                        .saturating_add_signed(delta)
+                        .min(if self.session_source.is_some() { 1 } else { 5 })
+                }
+                crate::listing::PanelKind::Sources(choices) => {
+                    panel.selected = panel
+                        .selected
+                        .saturating_add_signed(delta)
+                        .min(choices.len().saturating_sub(1))
+                }
+            }
+        }
+    }
+
+    pub fn panel_apply(&mut self) {
+        let Some(panel) = self.panel.take() else {
+            return;
+        };
+        match panel.kind {
+            crate::listing::PanelKind::Order => {
+                let order = match panel.selected / 2 {
+                    1 => crate::listing::Sort::SessionRecent,
+                    2 => crate::listing::Sort::SessionCount,
+                    _ => crate::listing::Sort::Time,
+                };
+                self.set_order(order, panel.selected % 2 == 1);
+            }
+            crate::listing::PanelKind::Sources(choices) => {
+                self.source_filter = choices
+                    .get(panel.selected)
+                    .and_then(|(source, _)| source.clone());
+                self.session = None;
+                self.session_origin = None;
+                self.filter();
+            }
+            crate::listing::PanelKind::Stats => {}
+        }
     }
 
     pub fn filter_summary(&self) -> String {
@@ -828,6 +1000,97 @@ pub fn is_failed_tool(entry: &Entry) -> bool {
 mod tests {
     use super::*;
     #[test]
+    fn order_menu_selects_first_and_reset_preserves_order() {
+        let mut a = app();
+        a.move_selection(1);
+        a.scroll = 4;
+        a.open_order();
+        a.panel_move(4);
+        a.panel_apply();
+        assert_eq!(a.visible, vec![0, 2, 1]);
+        assert_eq!(a.selected().unwrap().ts, 3);
+        assert_eq!(a.list.selected(), Some(0));
+        assert_eq!(a.list.offset(), 0);
+        assert_eq!(a.scroll, 0);
+        a.query = "rust".into();
+        a.filter();
+        let selected = a.selected().unwrap().ts;
+        a.reset_filters();
+        assert_eq!(a.selected().unwrap().ts, selected);
+        assert_eq!(a.order, crate::listing::Sort::SessionCount);
+        assert_eq!(a.stats.records, 3);
+        assert_eq!(a.stats.sessions, 2);
+    }
+
+    #[test]
+    fn changing_order_resets_position_but_confirming_current_order_does_not() {
+        let mut a = app();
+        a.move_selection(2);
+        *a.list.offset_mut() = 2;
+        a.scroll = 8;
+        a.open_order();
+        a.panel_apply();
+        assert_eq!(a.list.selected(), Some(2));
+        assert_eq!(a.scroll, 8);
+        a.set_order(a.order, true);
+        assert_eq!(a.selected().unwrap().ts, 1);
+        assert_eq!(a.list.selected(), Some(0));
+        assert_eq!(a.list.offset(), 0);
+        assert_eq!(a.scroll, 0);
+        a.query = "missing".into();
+        a.filter();
+        a.set_order(a.order, false);
+        assert_eq!(a.list.selected(), None);
+        assert_eq!(a.selection_anchor, None);
+        a.query.clear();
+        a.filter();
+        assert_eq!(a.selected().unwrap().ts, 3);
+    }
+
+    #[test]
+    fn source_picker_includes_empty_files_and_clears_only_source_scoped_session() {
+        let mut a = app();
+        let first = std::path::PathBuf::from("a/history.jsonl");
+        let second = std::path::PathBuf::from("b/history.jsonl");
+        let empty = std::path::PathBuf::from("empty/history.jsonl");
+        a.history.sources = vec![first.clone(), second.clone(), empty.clone()];
+        a.history.entries[0].source = Some(first.clone());
+        a.history.entries[1].source = Some(second.clone());
+        a.history.entries[2].source = Some(first);
+        a.query = "rust".into();
+        a.filter();
+        a.toggle_session();
+        a.open_sources();
+        let panel = a.panel.as_mut().unwrap();
+        let crate::listing::PanelKind::Sources(choices) = &panel.kind else {
+            panic!("wrong panel");
+        };
+        assert!(choices.contains(&(Some(empty), 0)));
+        assert_eq!(choices[0], (None, 2));
+        panel.selected = choices
+            .iter()
+            .position(|(source, _)| *source == Some(second.clone()))
+            .unwrap();
+        a.panel_apply();
+        assert!(a.session.is_none());
+        assert_eq!(a.query, "rust");
+        assert_eq!(a.source_filter, Some(second.clone()));
+        assert!(a.visible.is_empty());
+        assert_eq!(a.totals.sources.len(), 3);
+        a.open_sources();
+        let mut updated = a.history.clone();
+        updated.entries[1].text = "rust beta".into();
+        a.replace_history(updated);
+        let panel = a.panel.as_ref().unwrap();
+        let crate::listing::PanelKind::Sources(choices) = &panel.kind else {
+            panic!("wrong panel");
+        };
+        assert_eq!(choices[panel.selected], (Some(second), 1));
+        a.panel_apply();
+        a.reset_filters();
+        assert_eq!(a.stats.records, 3);
+    }
+    #[test]
     fn search_cancel_restores_query_selection_and_scroll_after_reload() {
         let mut a = app();
         a.move_selection(2);
@@ -878,6 +1141,7 @@ mod tests {
         let alpha = std::path::PathBuf::from(".codex/history.jsonl");
         let beta = std::path::PathBuf::from(".codex-beta/history.jsonl");
         let mut a = App::new(History {
+            sources: Vec::new(),
             entries: vec![
                 Entry {
                     tool: None,
@@ -1070,6 +1334,7 @@ mod tests {
         {
             entry.source = Some(std::path::Path::new(source).join("history.jsonl"));
         }
+        a.filter();
         a.cycle_source();
         assert_eq!(a.visible, vec![0]);
         assert!(a.filter_summary().contains("Source: .codex"));
@@ -1129,7 +1394,8 @@ mod tests {
     }
     #[test]
     fn groups_tools_with_nested_folding_search_and_reverse_order() {
-        let mut a = App::new(History {
+        let initial = App::new(History {
+            sources: Vec::new(),
             entries: vec![
                 Entry {
                     tool: None,
@@ -1162,8 +1428,12 @@ mod tests {
             ],
             skipped: 0,
         });
-        a.session_source = Some("demo".into());
-        a.filter();
+        let mut a = App::from_session(crate::session::Session {
+            history: initial.history,
+            info: String::new(),
+            id: "demo".into(),
+            path: "demo".into(),
+        });
         assert_eq!(a.visible, vec![0, 5, 3]);
         a.move_selection(1);
         assert_eq!(a.selected_group(), Some(&(1..3)));
@@ -1190,6 +1460,7 @@ mod tests {
     }
     fn app() -> App {
         App::new(History {
+            sources: Vec::new(),
             entries: vec![
                 Entry {
                     tool: None,

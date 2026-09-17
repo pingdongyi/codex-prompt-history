@@ -32,6 +32,7 @@ pub enum RecordedCommand {
 
 #[derive(Clone, Default)]
 pub struct History {
+    pub sources: Vec<PathBuf>,
     pub entries: Vec<Entry>,
     pub skipped: usize,
 }
@@ -40,6 +41,7 @@ impl History {
     fn load(path: &Path, progress: &mut crate::loader::Progress<'_>) -> Result<Self> {
         let file = File::open(path).with_context(|| format!("Cannot open {}", path.display()))?;
         let mut history = Self::parse_with(BufReader::new(file), progress)?;
+        history.sources.push(path.to_path_buf());
         for entry in &mut history.entries {
             entry.source = Some(path.to_path_buf());
         }
@@ -66,6 +68,7 @@ impl History {
                 continue;
             }
             let history = Self::load(&canonical, progress)?;
+            merged.sources.extend(history.sources);
             merged.entries.extend(history.entries);
             merged.skipped += history.skipped;
         }
@@ -172,7 +175,10 @@ mod tests {
         )
         .unwrap();
         std::fs::write(&b, "{\"session_id\":\"same\",\"ts\":2,\"text\":\"two\"}\n").unwrap();
-        let history = History::load_many(&[a.clone(), b.clone(), a.clone()]).unwrap();
+        let empty = root.join("empty.jsonl");
+        std::fs::write(&empty, "").unwrap();
+        let history = History::load_many(&[a.clone(), b.clone(), empty, a.clone()]).unwrap();
+        assert_eq!(history.sources.len(), 3);
         assert_eq!(history.entries.len(), 2);
         assert_eq!(history.skipped, 1);
         assert_eq!(history.entries[0].text, "two");

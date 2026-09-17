@@ -81,7 +81,10 @@ Archives and `SHA256SUMS` are written to `dist/`. Verify downloads on Linux with
 | `t` | Cycle loaded sources: all, then loaded parent directory names |
 | `x` | Clear search |
 | `[` / `]` | Previous / next failed tool in a session (wraps) |
-| `o` | Toggle newest / oldest first |
+| `o` / `O` | Reverse current ordering / choose sort mode |
+| `T` | Choose a source directly (prompt history) |
+| `i` | View filtered statistics |
+| `z` | Clear all list filters, retaining ordering and selection when possible |
 | `r` | Reload the file |
 | `R` | Resume the selected session in Codex using its source CODEX_HOME |
 | `Esc` | Leave activity focus; otherwise clear search, session, date, then source; return from a session when no filters remain |
@@ -99,6 +102,16 @@ Search stays live while editing, with a visible caret and horizontal scrolling f
 Bracketed paste is enabled where supported. In search, pasted line breaks and tabs become spaces and other control characters are removed. Bracketed paste outside search is ignored so pasted characters cannot invoke commands. Existing unmodified shortcuts remain available outside search; unrecognized Ctrl/Alt combinations do not trigger ordinary character shortcuts.
 
 `?` or `F1` opens a scrollable help panel. Use arrows, Page Up/Down, or Home/End to navigate, and Esc, q, ?, or F1 to close it. The underlying view and filters stay intact.
+
+## Ordering, source selection, and statistics
+
+`O` opens an order menu. Prompt history supports newest/oldest prompts, session groups ordered by most/least recent matching activity, and session groups ordered by most/fewest matching prompts. Session identity includes the source history file, so identical IDs from different sources stay separate. Group activity uses the newest matching timestamp; ties are deterministic. `o` reverses the selected ordering. Session timelines retain file order/reverse file order so tool activity is not rearranged by prompt-only grouping modes.
+
+`T` opens a source picker with directory names, full history paths, and counts. Counts reflect search and date conditions; choosing a source clears the session filter, matching the existing `t` cycle behavior. Empty loaded files remain visible with zero records. `Esc` cancels the picker without changing filters. `z` clears search, session, source, and date filters together; it does not reset sorting or the separate detail-find query.
+
+`i` opens scrollable statistics for the current list filters: matching versus loaded records/sessions/sources, date range, active days, recent counts, busiest day/session, and per-source counts. Session statistics show user/assistant messages, tool calls, unmatched results, and failed tools. Folded entries are counted once and virtual group headers are excluded. Recent counts end today in local time; the chart's date window does not itself filter the list. The activity chart excludes the selected-date filter to preserve surrounding-day context, whereas statistics include it.
+
+Use arrows, Page Up/Down, Home/End, and Enter in pickers; Esc or q closes a panel. Changing sort mode or reversing order selects the first row and resets list and detail scrolling. Confirming the current sort leaves the position unchanged. Filter changes preserve the selected record whenever it remains a match.
 
 ## Finding within long details
 
@@ -136,7 +149,7 @@ These are display labels, not new default sources. To load all three from PowerS
 .\codex-prompt-history.exe --file "$HOME\.codex\history.jsonl" --file "$HOME\.codex-beta\history.jsonl" --file "$HOME\.codex-gamma\history.jsonl"
 ```
 
-Filtering and sorting retain the current record when it still matches. Reload locates the same record again even when new prompts have shifted its position. Browsing keeps history and session files read-only. The `R` shortcut launches Codex directly with the selected source directory; it does not invoke PowerShell functions.
+Filtering retains the current record when it still matches; changing sorting returns to the first row. Reload locates the same record again even when new prompts have shifted its position. Browsing keeps history and session files read-only. The `R` shortcut launches Codex directly with the selected source directory; it does not invoke PowerShell functions.
 
 ## Session history
 

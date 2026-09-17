@@ -176,6 +176,7 @@ mod tests {
     fn content_and_commands_are_complete_and_ids_are_not_role_names() {
         let full = "echo '中文'\nprintf '%s' \"$HOME\"\n".repeat(20);
         let mut app = App::new(History {
+            sources: Vec::new(),
             entries: vec![Entry {
                 source: None,
                 tool: Some(ToolInfo {
