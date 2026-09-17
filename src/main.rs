@@ -5,6 +5,7 @@ mod detail_find;
 mod formatting;
 mod history;
 mod loader;
+mod resume;
 mod search;
 mod session;
 mod tool_summary;
@@ -39,6 +40,12 @@ struct Args {
     /// Clipboard backend: auto uses native locally and terminal OSC52 over SSH
     #[arg(long, value_enum, default_value_t = clipboard::Mode::Auto)]
     clipboard: clipboard::Mode,
+    /// Codex executable or npm .cmd shim used by R (not a shell function)
+    #[arg(long, default_value = "codex")]
+    codex_bin: PathBuf,
+    /// Override the project directory recorded in the selected session
+    #[arg(long)]
+    resume_cwd: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -66,6 +73,10 @@ fn main() -> Result<()> {
     start_load(&mut app, &mut loader, loader::Job::History(paths.clone()));
     let mut terminal = ratatui::init();
     let paste_enabled = crossterm::execute!(io::stdout(), event::EnableBracketedPaste).is_ok();
+    let resume = resume::Settings {
+        program: args.codex_bin,
+        cwd: args.resume_cwd,
+    };
     let result = run(
         &mut terminal,
         &mut app,
@@ -73,6 +84,7 @@ fn main() -> Result<()> {
         args.sessions_dir.as_deref(),
         &mut loader,
         &mut clipboard,
+        &resume,
     );
     if paste_enabled {
         let _ = crossterm::execute!(io::stdout(), event::DisableBracketedPaste);
@@ -88,9 +100,10 @@ fn run(
     sessions_dir: Option<&std::path::Path>,
     loader: &mut loader::Loader,
     clipboard: &mut clipboard::Clipboard,
+    resume: &resume::Settings,
 ) -> Result<()> {
     loop {
-        apply_load_events(root, loader);
+        let ready = apply_load_events(root, loader);
         if let Some(outcome) = clipboard.poll() {
             let message = match outcome {
                 clipboard::Outcome::Native(label) => format!("Copied {label} to system clipboard"),
@@ -109,6 +122,13 @@ fn run(
                 Some(app) => app.status = message,
                 None => root.status = message,
             };
+        }
+        if let Some(ready) = ready {
+            if clipboard.pending {
+                active_app(root).status = "Resume ready; finish copying and press R again".into();
+            } else {
+                run_ready(terminal, root, loader, paths, ready)?;
+            }
         }
         terminal.draw(|frame| match root.transcript.as_deref_mut() {
             Some(app) => ui::draw(frame, app),
@@ -185,7 +205,51 @@ fn run(
             if let Some(entry) = root.selected() {
                 let directory = session_directory(entry, sessions_dir);
                 let id = entry.session_id.clone();
-                start_load(root, loader, loader::Job::OpenSession { directory, id });
+                let origin = entry.source.clone();
+                start_load(
+                    root,
+                    loader,
+                    loader::Job::OpenSession {
+                        directory,
+                        id,
+                        origin,
+                    },
+                );
+            }
+            continue;
+        }
+        let current = root.transcript.as_deref().unwrap_or(root);
+        if key.code == KeyCode::Char('R')
+            && !current.is_editing()
+            && !current.help
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            if clipboard.pending {
+                active_app(root).status =
+                    "Wait for the clipboard request to finish before resuming".into();
+                continue;
+            }
+            let session_path = current.session_source.clone();
+            let plan = current.resume_plan();
+            match plan {
+                Err(error) => active_app(root).status = format!("Resume unavailable: {error:#}"),
+                Ok(plan) => {
+                    let directory = sessions_dir
+                        .map(std::path::Path::to_path_buf)
+                        .unwrap_or_else(|| plan.home.join("sessions"));
+                    start_load(
+                        root,
+                        loader,
+                        loader::Job::PrepareResume {
+                            plan,
+                            settings: resume.clone(),
+                            directory,
+                            session_path,
+                        },
+                    );
+                }
             }
             continue;
         }
@@ -313,6 +377,67 @@ fn run(
     Ok(())
 }
 
+fn active_app(root: &mut App) -> &mut App {
+    if root.transcript.is_none() {
+        root
+    } else {
+        root.transcript.as_deref_mut().expect("session view exists")
+    }
+}
+
+fn run_ready(
+    terminal: &mut ratatui::DefaultTerminal,
+    root: &mut App,
+    loader: &mut loader::Loader,
+    paths: &[PathBuf],
+    ready: resume::Ready,
+) -> Result<()> {
+    let result = handoff(terminal, &ready.plan, &ready.program, &ready.cwd)?;
+    match result {
+        Ok(status) if status.success() => {
+            let job = if let Some(path) = active_app(root).session_source.clone() {
+                loader::Job::ReloadSession(path)
+            } else {
+                loader::Job::History(paths.to_vec())
+            };
+            start_load(root, loader, job);
+            active_app(root).status = format!(
+                "Returned from Codex ({}) · refreshing view…",
+                ready.plan.profile
+            );
+        }
+        Ok(status) => {
+            active_app(root).status = format!(
+                "Codex ({}) exited with {status}; output remains in terminal scrollback",
+                ready.plan.profile
+            )
+        }
+        Err(error) => active_app(root).status = format!("Resume failed: {error:#}"),
+    }
+    Ok(())
+}
+
+fn handoff(
+    terminal: &mut ratatui::DefaultTerminal,
+    plan: &resume::Plan,
+    program: &std::path::Path,
+    cwd: &std::path::Path,
+) -> Result<Result<std::process::ExitStatus>> {
+    let _ = crossterm::execute!(io::stdout(), event::DisableBracketedPaste);
+    ratatui::restore();
+    let result = resume::execute(plan, program, cwd);
+    // Restore the browser even when process creation or Codex itself failed.
+    crossterm::terminal::enable_raw_mode()?;
+    crossterm::execute!(
+        io::stdout(),
+        crossterm::terminal::EnterAlternateScreen,
+        crossterm::cursor::Hide
+    )?;
+    let _ = crossterm::execute!(io::stdout(), event::EnableBracketedPaste);
+    terminal.clear()?;
+    Ok(result)
+}
+
 fn handle_search_key(app: &mut App, key: event::KeyEvent) {
     match key.code {
         KeyCode::F(1) => {
@@ -424,7 +549,9 @@ fn start_load(root: &mut App, loader: &mut loader::Loader, job: loader::Job) {
         app.loading = false;
     }
     let result = loader.start(job);
-    let app = if target == loader::Target::ReloadSession {
+    let app = if target == loader::Target::PrepareResume {
+        active_app(root)
+    } else if target == loader::Target::ReloadSession {
         root.transcript
             .as_deref_mut()
             .expect("reload requires a session")
@@ -440,11 +567,14 @@ fn start_load(root: &mut App, loader: &mut loader::Loader, job: loader::Job) {
     }
 }
 
-fn apply_load_events(root: &mut App, loader: &mut loader::Loader) {
+fn apply_load_events(root: &mut App, loader: &mut loader::Loader) -> Option<resume::Ready> {
+    let mut ready = None;
     while let Some(event) = loader.poll() {
         match event {
             loader::Event::Progress { target, message } => {
-                let app = if target == loader::Target::ReloadSession {
+                let app = if target == loader::Target::PrepareResume {
+                    Some(active_app(root))
+                } else if target == loader::Target::ReloadSession {
                     root.transcript.as_deref_mut()
                 } else {
                     Some(&mut *root)
@@ -459,14 +589,18 @@ fn apply_load_events(root: &mut App, loader: &mut loader::Loader) {
                     app.loading = false;
                 }
                 match result {
+                    Ok(loader::Loaded::Resume(plan)) => ready = Some(plan),
                     Ok(loader::Loaded::History(history)) => {
                         root.replace_history(history);
                         root.status = "History reloaded".into();
                     }
-                    Ok(loader::Loaded::Session { session, cached })
-                        if target == loader::Target::OpenSession =>
-                    {
+                    Ok(loader::Loaded::Session {
+                        session,
+                        cached,
+                        origin,
+                    }) if target == loader::Target::OpenSession => {
                         let mut app = App::from_session(session);
+                        app.origin_history = origin;
                         app.search.history = root.search.history.clone();
                         app.status = if cached {
                             "Session loaded from memory cache"
@@ -490,19 +624,29 @@ fn apply_load_events(root: &mut App, loader: &mut loader::Loader) {
                         }
                     }
                     Err(error) => {
-                        let app = if target == loader::Target::ReloadSession {
+                        let app = if target == loader::Target::PrepareResume {
+                            Some(active_app(root))
+                        } else if target == loader::Target::ReloadSession {
                             root.transcript.as_deref_mut()
                         } else {
                             Some(&mut *root)
                         };
                         if let Some(app) = app {
-                            app.status = format!("Load failed: {error}");
+                            app.status = format!(
+                                "{}: {error}",
+                                if target == loader::Target::PrepareResume {
+                                    "Resume unavailable"
+                                } else {
+                                    "Load failed"
+                                }
+                            );
                         }
                     }
                 }
             }
         }
     }
+    ready
 }
 
 fn session_directory(entry: &history::Entry, override_dir: Option<&std::path::Path>) -> PathBuf {

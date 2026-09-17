@@ -78,16 +78,17 @@ Archives and `SHA256SUMS` are written to `dist/`. Verify downloads on Linux with
 | `↑` / `↓` while searching | Recall recent queries or restore the draft |
 | `Ctrl+U` while searching | Clear query |
 | `s` | Toggle filtering to the selected session |
-| `t` | Cycle loaded sources: all, alpha, beta, gamma (when present) |
+| `t` | Cycle loaded sources: all, then loaded parent directory names |
 | `x` | Clear search |
 | `[` / `]` | Previous / next failed tool in a session (wraps) |
 | `o` | Toggle newest / oldest first |
 | `r` | Reload the file |
+| `R` | Resume the selected session in Codex using its source CODEX_HOME |
 | `Esc` | Leave activity focus; otherwise clear search, session, date, then source; return from a session when no filters remain |
 | `?` / `F1` | Open keyboard help; arrows and page keys scroll it |
 | `q` / `Ctrl+C` | Quit |
 
-The activity chart follows source, search, and session filters; the selected date filters the list while the chart keeps the surrounding days visible. Search matches literal substrings in prompt text or session IDs. Reload is manual; a failed reload preserves the current data. History and session files are read-only; content is copied out only when a copy shortcut is explicitly pressed.
+The activity chart follows source, search, and session filters; the selected date filters the list while the chart keeps the surrounding days visible. Search matches literal substrings in prompt text or session IDs. Reload is manual; a failed reload preserves the current data. Browsing keeps history and session files read-only. Copy shortcuts export text; `R` explicitly hands the selected session to Codex.
 
 Repeat `--file` to merge histories in timestamp order. Without `--file`, only `~/.codex/history.jsonl` is loaded; other directories are never discovered automatically. Multi-file views label each prompt's source. Session filtering distinguishes identical session IDs from different files, and `Enter` opens the source file's sibling `sessions` directory. `--sessions-dir` explicitly overrides that directory for all sources. Repeating the same file loads it once. Every requested file must be readable; reload (`r`) refreshes all sources together and preserves the current data if any file cannot be read.
 
@@ -117,17 +118,17 @@ The chart defaults to the last 30 local-calendar days, including today. Press `a
 
 When the range contains more days than terminal columns, each column displays the **maximum daily count** in its interval. The header total and selected-day count remain exact; the chart label indicates this compressed mode. Sparse daily counts avoid allocating one entry for every date in a long history.
 
-## Navigation and source profiles
+## Navigation and source names
 
 The focused pane has a cyan border. `Tab` switches between the list and details; arrows, Home/End, and Page Up/Down operate on that pane. The filter strip shows active search, session, source, and matching record counts. `x` clears only search; `s` toggles session filtering; `t` cycles loaded sources and clears a source-specific session filter. `Esc` clears one filter at a time (search, session, date, source), then returns from a session. Editing search and dismissing help take precedence.
 
-The following directory labels match these PowerShell profiles:
+Source labels come directly from each history file's parent directory name:
 
-| Profile | History | Session directory |
+| Display name | History | Session directory |
 | --- | --- | --- |
-| alpha | `~/.codex/history.jsonl` | `~/.codex/sessions` |
-| beta | `~/.codex-beta/history.jsonl` | `~/.codex-beta/sessions` |
-| gamma | `~/.codex-gamma/history.jsonl` | `~/.codex-gamma/sessions` |
+| `.codex` | `~/.codex/history.jsonl` | `~/.codex/sessions` |
+| `.codex-beta` | `~/.codex-beta/history.jsonl` | `~/.codex-beta/sessions` |
+| `.codex-gamma` | `~/.codex-gamma/history.jsonl` | `~/.codex-gamma/sessions` |
 
 These are display labels, not new default sources. To load all three from PowerShell:
 
@@ -135,7 +136,7 @@ These are display labels, not new default sources. To load all three from PowerS
 .\codex-prompt-history.exe --file "$HOME\.codex\history.jsonl" --file "$HOME\.codex-beta\history.jsonl" --file "$HOME\.codex-gamma\history.jsonl"
 ```
 
-Filtering and sorting retain the current record when it still matches. Reload locates the same record again even when new prompts have shifted its position. History and session files remain read-only; the app does not invoke the PowerShell functions or launch Codex sessions.
+Filtering and sorting retain the current record when it still matches. Reload locates the same record again even when new prompts have shifted its position. Browsing keeps history and session files read-only. The `R` shortcut launches Codex directly with the selected source directory; it does not invoke PowerShell functions.
 
 ## Session history
 
@@ -162,6 +163,26 @@ codex-prompt-history --sessions-dir /path/to/sessions
 ```
 
 The viewer supports response-item messages and function/custom tool records, plus older event-only message logs. It avoids mirrored event-message duplicates. Non-text attachments appear as labels. System/developer instructions, reasoning records, and unrelated telemetry are omitted. Malformed JSON lines are skipped and counted. It displays the selected log only; fork ancestors are not reconstructed. Session entries are held in memory.
+
+## Continue a session
+
+Press uppercase `R` on a prompt or inside its session view to enter the recorded project directory and run `codex resume --cd . -- <SESSION_ID>`. The child receives `CODEX_HOME` set to the parent directory of that prompt's original `history.jsonl`: `.codex`, `.codex-beta`, and `.codex-gamma` use their corresponding directories. Other explicitly loaded histories use their own parent directories. This is home-directory selection, not Codex's separate `--profile` option. The viewer does not change its own environment or the calling shell's environment.
+
+The browser temporarily releases the terminal to Codex. On exit it restores the TUI and its current filters/selection. A successful exit refreshes the active history/session view; an error or nonzero exit shows a status message and preserves the view. Codex's output remains in the terminal scrollback. In search editing `R` is ordinary input; resuming occurs only on the explicit normal-mode shortcut. Pending background loads are cancelled before handoff.
+
+Codex must be installed on PATH. Use `--codex-bin PATH` for a specific executable; Windows supports `codex.exe` or the npm `codex.cmd` shim, not PowerShell function names or `.ps1` launchers. Only recorded UUID session IDs are accepted. No prompt text, recorded tool command, model override, or approval/sandbox override is passed to the child.
+
+By default, the viewer locates the selected session log in the background and reads `cwd` from its `session_meta` header. Codex is started in that project directory with `--cd .`, so no manual `cd` is needed. The viewer and calling shell keep their own working directories. If the recorded path is missing, relative for the current platform, or no longer a directory, launch is refused with a message instead of falling back to an unrelated directory. `--resume-cwd PATH` takes precedence and also works when recorded directory metadata is unavailable. Preparation remains cancellable with Esc.
+
+```powershell
+.\codex-prompt-history.exe --file "$HOME\.codex-beta\history.jsonl" --codex-bin "$env:APPDATA\npm\codex.cmd"
+# Optional directory override:
+.\codex-prompt-history.exe --file "$HOME\.codex-beta\history.jsonl" --resume-cwd "C:\work\project"
+```
+
+`--sessions-dir` controls viewer lookup only; the resumed CLI still uses the original history source's `CODEX_HOME`. Codex is responsible for finding the session in that home and may update its own session/history files or workspace as normal when you interact with it. The viewer never merges histories onto disk.
+
+Parameter behavior was checked against the installed Codex CLI and the official [resume command reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli) and [CODEX_HOME documentation](https://learn.chatgpt.com/docs/config-file/config-advanced).
 
 ## Clipboard
 
@@ -195,4 +216,7 @@ One JSON object per line:
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
+cargo build
+python3 tests/session_smoke.py  # Linux PTY integration
+python3 tests/resume_smoke.py   # Linux stub-only handoff test, no real Codex session
 ```

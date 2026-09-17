@@ -588,9 +588,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(if transcript {
-                " f find  n/N match  y copy  [/] failed  / filter  Tab focus  ? help  q quit"
+                " R resume  f find  n/N match  y copy  [/] failed  / filter  ? help  q quit"
             } else {
-                " f find  n/N match  y copy  a dates  / filter  s session  t source  ? help  q quit"
+                " R resume  f find  n/N match  y copy  a dates  / filter  t source  ? help  q quit"
             }),
             Line::styled(
                 display_text(&app.status),
@@ -760,6 +760,7 @@ fn help(frame: &mut Frame, area: Rect, app: &mut App) {
             },
         ),
         ("[ / ]", "Previous / next failed tool"),
+        ("R", "Resume session using its CODEX_HOME"),
         ("o", "Reverse chronological order"),
         ("r", "Reload history from disk"),
         (

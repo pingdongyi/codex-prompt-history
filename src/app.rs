@@ -80,6 +80,7 @@ pub struct App {
     pub loading: bool,
     pub transcript: Option<Box<App>>,
     pub session_source: Option<std::path::PathBuf>,
+    pub origin_history: Option<std::path::PathBuf>,
     pub session_info: String,
     pub session_id: Option<String>,
     pub expanded_tools: std::collections::HashSet<usize>,
@@ -121,6 +122,7 @@ impl App {
             loading: false,
             transcript: None,
             session_source: None,
+            origin_history: None,
             session_info: String::new(),
             session_id: None,
             expanded_tools: std::collections::HashSet::new(),
@@ -129,6 +131,30 @@ impl App {
         };
         app.filter();
         app
+    }
+
+    pub fn resume_plan(&self) -> anyhow::Result<crate::resume::Plan> {
+        if self.session_source.is_some() {
+            crate::resume::Plan::new(
+                self.session_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("No recorded session ID"))?,
+                self.origin_history.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("The session has no originating history source")
+                })?,
+            )
+        } else {
+            let entry = self
+                .selected()
+                .ok_or_else(|| anyhow::anyhow!("Select a prompt to resume"))?;
+            crate::resume::Plan::new(
+                &entry.session_id,
+                entry
+                    .source
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("The prompt has no history source"))?,
+            )
+        }
     }
 
     pub fn is_editing(&self) -> bool {
@@ -1046,7 +1072,7 @@ mod tests {
         }
         a.cycle_source();
         assert_eq!(a.visible, vec![0]);
-        assert!(a.filter_summary().contains("Source: alpha"));
+        assert!(a.filter_summary().contains("Source: .codex"));
         a.cycle_source();
         assert_eq!(a.visible, vec![1]);
         a.cycle_source();

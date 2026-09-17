@@ -12,6 +12,7 @@ class Screen:
         self.x = self.y = 0
         self.pending = ''
         self.clipboard = []
+        self.responses = []
         self.decoder = codecs.getincrementaldecoder('utf-8')('replace')
 
     def feed(self, data):
@@ -82,6 +83,9 @@ class Screen:
         except ValueError:
             return
         amount = values[0] or 1
+        if command == 'n' and values[0] == 6:
+            self.responses.append(f'\x1b[{self.y + 1};{min(self.x, self.width - 1) + 1}R'.encode())
+            return
         if command in 'Hf':
             self.y = min(self.height - 1, max(0, (values[0] or 1) - 1))
             self.x = min(self.width - 1, max(0, ((values[1] if len(values) > 1 else 1) or 1) - 1))

@@ -45,6 +45,8 @@ with tempfile.TemporaryDirectory() as directory:
         while time.monotonic() < until:
             if select.select([master], [], [], 0.05)[0]:
                 screen.feed(os.read(master, 65536))
+                while screen.responses:
+                    os.write(master, screen.responses.pop(0))
         return screen.compact()
 
     def wait_for(text, timeout=5):

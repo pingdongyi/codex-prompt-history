@@ -104,25 +104,16 @@ impl History {
     }
 }
 
-/// Friendly names matching the user's PowerShell CODEX_HOME profiles.
+/// Display the parent directory name without profile aliases.
 pub fn source_name(path: &Path) -> String {
-    let directory = path
+    let parent = path
         .parent()
-        .and_then(Path::file_name)
-        .unwrap_or_default()
-        .to_string_lossy();
-    match directory.as_ref() {
-        ".codex" => "alpha".into(),
-        ".codex-beta" => "beta".into(),
-        ".codex-gamma" => "gamma".into(),
-        _ => {
-            if directory.is_empty() {
-                path.display().to_string()
-            } else {
-                directory.into_owned()
-            }
-        }
-    }
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    parent
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| parent.display().to_string())
 }
 
 pub fn timestamp(ts: i64) -> String {
@@ -147,12 +138,15 @@ pub fn display_text(text: &str) -> String {
 mod tests {
     use super::*;
     #[test]
-    fn profile_names_follow_the_provided_home_mapping() {
-        assert_eq!(source_name(Path::new(".codex/history.jsonl")), "alpha");
-        assert_eq!(source_name(Path::new(".codex-beta/history.jsonl")), "beta");
+    fn source_names_are_parent_directory_names() {
+        assert_eq!(source_name(Path::new(".codex/history.jsonl")), ".codex");
+        assert_eq!(
+            source_name(Path::new(".codex-beta/history.jsonl")),
+            ".codex-beta"
+        );
         assert_eq!(
             source_name(Path::new(".codex-gamma/history.jsonl")),
-            "gamma"
+            ".codex-gamma"
         );
         assert_eq!(
             source_name(Path::new(".codex-alpha/history.jsonl")),

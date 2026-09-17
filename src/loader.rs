@@ -21,12 +21,23 @@ pub enum Target {
     History,
     OpenSession,
     ReloadSession,
+    PrepareResume,
 }
 
 pub enum Job {
     History(Vec<PathBuf>),
-    OpenSession { directory: PathBuf, id: String },
+    OpenSession {
+        directory: PathBuf,
+        id: String,
+        origin: Option<PathBuf>,
+    },
     ReloadSession(PathBuf),
+    PrepareResume {
+        plan: crate::resume::Plan,
+        settings: crate::resume::Settings,
+        directory: PathBuf,
+        session_path: Option<PathBuf>,
+    },
 }
 impl Job {
     pub fn target(&self) -> Target {
@@ -34,13 +45,19 @@ impl Job {
             Self::History(_) => Target::History,
             Self::OpenSession { .. } => Target::OpenSession,
             Self::ReloadSession(_) => Target::ReloadSession,
+            Self::PrepareResume { .. } => Target::PrepareResume,
         }
     }
 }
 
 pub enum Loaded {
+    Resume(crate::resume::Ready),
     History(History),
-    Session { session: Session, cached: bool },
+    Session {
+        session: Session,
+        cached: bool,
+        origin: Option<PathBuf>,
+    },
 }
 pub enum Event {
     Progress {
@@ -107,15 +124,37 @@ impl Loader {
                         Ok(())
                     };
                     let result = match request.job {
+                        Job::PrepareResume {
+                            plan,
+                            settings,
+                            directory,
+                            session_path,
+                        } => settings
+                            .prepare(plan, &directory, session_path.as_deref(), &mut progress)
+                            .map(Loaded::Resume),
                         Job::History(paths) => {
                             History::load_many_with(&paths, &mut progress).map(Loaded::History)
                         }
-                        Job::OpenSession { directory, id } => cache
+                        Job::OpenSession {
+                            directory,
+                            id,
+                            origin,
+                        } => cache
                             .open(&directory, &id, &mut progress)
-                            .map(|(session, cached)| Loaded::Session { session, cached }),
-                        Job::ReloadSession(path) => cache
-                            .load(&path, true, &mut progress)
-                            .map(|(session, cached)| Loaded::Session { session, cached }),
+                            .map(|(session, cached)| Loaded::Session {
+                                session,
+                                cached,
+                                origin,
+                            }),
+                        Job::ReloadSession(path) => {
+                            cache
+                                .load(&path, true, &mut progress)
+                                .map(|(session, cached)| Loaded::Session {
+                                    session,
+                                    cached,
+                                    origin: None,
+                                })
+                        }
                     }
                     .map_err(|error| format!("{error:#}"));
                     if generation.load(Ordering::Relaxed) == request.id
