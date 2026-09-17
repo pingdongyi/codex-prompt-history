@@ -203,6 +203,10 @@ fn run(
                     root.loading = false;
                     continue;
                 }
+                if current.detail_fullscreen {
+                    current.toggle_fullscreen();
+                    continue;
+                }
                 if current.focus == app::Focus::Activity {
                     current.focus = app::Focus::List;
                     continue;
@@ -361,6 +365,15 @@ fn run(
                 app.toggle_tool()
             }
             KeyCode::Char('q') => break,
+            KeyCode::Char('v') => app.toggle_fullscreen(),
+            KeyCode::Char('W') => app.toggle_wrap(),
+            KeyCode::Left | KeyCode::Right
+                if app.focus == app::Focus::Detail && !app.detail_wrap =>
+            {
+                app.horizontal = app
+                    .horizontal
+                    .saturating_add_signed(if key.code == KeyCode::Right { 8 } else { -8 });
+            }
             KeyCode::Char('O') => app.open_order(),
             KeyCode::Char('T') if app.session_source.is_none() => app.open_sources(),
             KeyCode::Char('i') => {

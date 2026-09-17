@@ -14,6 +14,8 @@ struct Piece {
 }
 struct Row {
     text: String,
+    logical: usize,
+    start: usize,
     style: Style,
     pieces: Vec<Piece>,
 }
@@ -21,6 +23,7 @@ struct Document {
     rows: Vec<Row>,
     hits: Vec<usize>,
     truncated: bool,
+    max_width: usize,
 }
 
 /// Map case-insensitive matches back to complete original graphemes. Mapping is
@@ -69,9 +72,10 @@ impl Document {
             rows: Vec::new(),
             hits: Vec::new(),
             truncated: false,
+            max_width: 0,
         };
         let query = query.to_lowercase();
-        for line in lines {
+        for (logical, line) in lines.into_iter().enumerate() {
             let text: String = line
                 .spans
                 .into_iter()
@@ -95,10 +99,14 @@ impl Document {
                     .count()
                     .min(width.saturating_sub(1)),
             );
-            let parts = textwrap::wrap(
-                &text,
-                textwrap::Options::new(width.max(1)).subsequent_indent(&indent),
-            );
+            let parts = if width == 0 {
+                vec![std::borrow::Cow::Borrowed(text.as_str())]
+            } else {
+                textwrap::wrap(
+                    &text,
+                    textwrap::Options::new(width).subsequent_indent(&indent),
+                )
+            };
             let mut consumed = 0;
             let mut first_match = 0;
             for part in parts {
@@ -143,8 +151,13 @@ impl Document {
                         });
                     }
                 }
+                result.max_width = result
+                    .max_width
+                    .max(unicode_width::UnicodeWidthStr::width(part.as_str()));
                 result.rows.push(Row {
                     text: part,
+                    logical,
+                    start,
                     style: line.style,
                     pieces,
                 });
@@ -237,6 +250,8 @@ pub struct Find {
     pending: Option<bool>,
     preserve_scroll: bool,
     reveal_current: bool,
+    pan_to_current: bool,
+    reset_horizontal: bool,
     saved: Option<(String, usize, crate::app::Focus, Option<usize>)>,
 }
 impl Find {
@@ -281,6 +296,67 @@ impl Find {
     pub fn cached(&self, key: Key, enabled: bool) -> bool {
         self.key == Some(key) && self.cached_query == if enabled { self.query.as_str() } else { "" }
     }
+    pub fn rebuild_at(
+        &mut self,
+        key: Key,
+        lines: Vec<Line<'static>>,
+        enabled: bool,
+        scroll: &mut usize,
+    ) {
+        let same_record = self
+            .key
+            .is_some_and(|old| old.0 == key.0 && old.1 == key.1 && old.2 == key.2);
+        self.reset_horizontal = !same_record;
+        let anchor = same_record
+            .then(|| {
+                self.document
+                    .as_ref()
+                    .and_then(|doc| doc.rows.get(*scroll))
+                    .map(|row| (row.logical, row.start))
+            })
+            .flatten();
+        self.rebuild(key, lines, enabled);
+        if let Some((logical, start)) = anchor {
+            *scroll = self
+                .document
+                .as_ref()
+                .and_then(|doc| {
+                    doc.rows
+                        .iter()
+                        .rposition(|row| row.logical == logical && row.start <= start)
+                })
+                .unwrap_or(*scroll);
+        }
+    }
+
+    pub fn reveal_horizontal(&mut self, offset: usize, width: usize) -> usize {
+        use unicode_width::UnicodeWidthStr;
+        let Some(doc) = &self.document else {
+            return 0;
+        };
+        let maximum = doc.max_width.saturating_sub(width).min(u16::MAX as usize);
+        let mut offset = if self.reset_horizontal {
+            0
+        } else {
+            offset.min(maximum)
+        };
+        self.reset_horizontal = false;
+        if self.pan_to_current {
+            self.pan_to_current = false;
+            if let Some(hit) = self.current
+                && let Some(row) = doc.hits.get(hit).and_then(|&index| doc.rows.get(index))
+                && let Some(piece) = row.pieces.iter().find(|piece| piece.hit == hit)
+            {
+                let start = row.text[..piece.bytes.start].width();
+                let end = row.text[..piece.bytes.end].width();
+                if start < offset || end > offset + width {
+                    offset = start.min(maximum);
+                }
+            }
+        }
+        offset
+    }
+
     pub fn rebuild(&mut self, key: Key, lines: Vec<Line<'static>>, enabled: bool) {
         let query = if enabled { self.query.as_str() } else { "" };
         let reflow = self
@@ -304,6 +380,7 @@ impl Find {
             return 0;
         };
         let maximum = document.rows.len().saturating_sub(height);
+        self.pan_to_current = self.reveal_current || self.pending.is_some();
         if self.reveal_current {
             self.reveal_current = false;
             if let Some(row) = self.current.and_then(|index| document.hits.get(index)) {
@@ -352,6 +429,26 @@ impl Find {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn no_wrap_find_reveals_horizontal_match_and_reflow_retains_text() {
+        let lines = vec![Line::from("a ".repeat(40) + "目标"), Line::from("last")];
+        let mut find = Find::default();
+        let mut scroll = 0;
+        find.rebuild_at((0, Some(0), false, 10), lines.clone(), true, &mut scroll);
+        scroll = 3;
+        find.rebuild_at((0, Some(0), false, 0), lines.clone(), true, &mut scroll);
+        assert_eq!(scroll, 0);
+        assert_eq!(find.document.as_ref().unwrap().rows.len(), 2);
+        find.query = "目标".into();
+        find.rebuild_at((0, Some(0), false, 0), lines.clone(), true, &mut scroll);
+        find.prepare(&mut scroll, 4);
+        assert_eq!(find.current, Some(0));
+        assert_eq!(find.reveal_horizontal(0, 10), 74);
+        find.rebuild_at((0, Some(0), false, 10), lines, true, &mut scroll);
+        find.prepare(&mut scroll, 2);
+        assert_eq!(find.current, Some(0));
+        assert!(scroll > 0);
+    }
     #[test]
     fn active_match_survives_resize_and_cancel_and_styles_are_distinct() {
         let mut find = Find {

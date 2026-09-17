@@ -58,13 +58,15 @@ Archives and `SHA256SUMS` are written to `dist/`. Verify downloads on Linux with
 | `Y` | Copy the real session ID (also works on session group headers) |
 | `C` | Copy the recorded tool command, preserving line breaks and quoting |
 | `Tab` / `Shift+Tab` | Switch focus between list and details |
+| `v` | Toggle fullscreen details; `Esc` exits fullscreen first |
+| `W` | Toggle detail wrapping (on by default) |
 | `a` | Focus / leave activity chart (prompt history) |
 | `w` | Cycle 7-day / 30-day / all-time activity range |
 | `d` | Clear date filter |
 | `↑` / `↓`, `k` / `j` | Navigate the focused pane |
 | `Home` / `End`, `g` / `G` | First / last item or detail line |
 | `PgUp` / `PgDn` | Move ten list items or one page of details |
-| `←` / `→`, `K` / `J` | Scroll the full prompt |
+| `←` / `→`, `K` / `J` | Scroll details vertically; with detail focus and wrapping off, arrows pan horizontally |
 | `/` / `Ctrl+F` | Edit case-insensitive list filtering |
 | `f` | Find within the selected record |
 | `n` / `N` | Next / previous detail match (wraps) |
@@ -233,3 +235,7 @@ cargo build
 python3 tests/session_smoke.py  # Linux PTY integration
 python3 tests/resume_smoke.py   # Linux stub-only handoff test, no real Codex session
 ```
+
+### Fullscreen reading and wrapping
+
+Press `v` to read the selected record using the full terminal; press `v` or `Esc` to return to the previous pane focus. `W` toggles automatic wrapping. With wrapping off and details focused, left/right arrows pan eight columns; `J`/`K` still scroll vertically. Switching layout maps the top visible text to its new line, or keeps the active find match visible. `f` and `n`/`N` work in either layout and reveal matches horizontally when needed. Opening list search or the activity chart leaves fullscreen. These preferences are in memory only.

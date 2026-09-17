@@ -62,6 +62,10 @@ pub struct App {
     pub session_origin: Option<std::path::PathBuf>,
     pub source_filter: Option<std::path::PathBuf>,
     pub focus: Focus,
+    pub detail_fullscreen: bool,
+    pub detail_wrap: bool,
+    pub horizontal: usize,
+    fullscreen_focus: Focus,
     pub detail_page_size: usize,
     pub detail_max_scroll: usize,
     pub matched_count: usize,
@@ -108,6 +112,10 @@ impl App {
             session_origin: None,
             source_filter: None,
             focus: Focus::List,
+            detail_fullscreen: false,
+            detail_wrap: true,
+            horizontal: 0,
+            fullscreen_focus: Focus::List,
             detail_page_size: 1,
             detail_max_scroll: 0,
             matched_count: 0,
@@ -205,6 +213,9 @@ impl App {
     }
 
     pub fn begin_search(&mut self) {
+        if self.detail_fullscreen {
+            self.toggle_fullscreen();
+        }
         if self.is_editing() {
             return;
         }
@@ -431,7 +442,12 @@ impl App {
         self.list
             .select(self.visible.iter().position(|&index| index == target));
         self.scroll = 0;
-        self.focus = Focus::List;
+        self.horizontal = 0;
+        self.focus = if self.detail_fullscreen {
+            Focus::Detail
+        } else {
+            Focus::List
+        };
         let number = failures.iter().position(|&index| index == target).unwrap() + 1;
         self.status = format!(
             "Failed tool {number}/{} · [ previous · ] next (wraps)",
@@ -666,7 +682,28 @@ impl App {
         }
     }
 
+    pub fn toggle_fullscreen(&mut self) {
+        self.detail_fullscreen = !self.detail_fullscreen;
+        if self.detail_fullscreen {
+            self.fullscreen_focus = self.focus;
+            self.focus = Focus::Detail;
+        } else {
+            self.focus = self.fullscreen_focus;
+        }
+    }
+
+    pub fn toggle_wrap(&mut self) {
+        self.detail_wrap = !self.detail_wrap;
+        self.horizontal = 0;
+    }
+
     pub fn toggle_focus(&mut self) {
+        if self.detail_fullscreen {
+            self.toggle_fullscreen();
+            self.focus = Focus::List;
+            return;
+        }
+
         self.focus = if self.focus == Focus::List {
             Focus::Detail
         } else {
@@ -712,6 +749,9 @@ impl App {
     }
 
     pub fn focus_activity(&mut self) {
+        if self.detail_fullscreen {
+            self.toggle_fullscreen();
+        }
         if self.session_source.is_none() {
             self.focus = if self.focus == Focus::Activity {
                 Focus::List
@@ -940,6 +980,7 @@ impl App {
             .saturating_add_signed(delta)
             .min(self.visible.len() - 1);
         self.list.select(Some(next));
+        self.horizontal = 0;
         self.scroll = 0;
     }
 
@@ -999,6 +1040,27 @@ pub fn is_failed_tool(entry: &Entry) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fullscreen_restores_focus_and_search_exposes_its_input() {
+        let mut a = app();
+        a.move_selection(1);
+        a.toggle_fullscreen();
+        assert_eq!(a.focus, Focus::Detail);
+        assert!(a.detail_fullscreen);
+        a.toggle_wrap();
+        assert!(!a.detail_wrap);
+        a.toggle_fullscreen();
+        assert_eq!(a.focus, Focus::List);
+        assert_eq!(a.selected().unwrap().ts, 2);
+        a.focus = Focus::Detail;
+        a.toggle_fullscreen();
+        a.toggle_fullscreen();
+        assert_eq!(a.focus, Focus::Detail);
+        a.toggle_fullscreen();
+        a.begin_search();
+        assert!(!a.detail_fullscreen);
+        assert!(a.searching);
+    }
     #[test]
     fn order_menu_selects_first_and_reset_preserves_order() {
         let mut a = app();

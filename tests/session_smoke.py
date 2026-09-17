@@ -133,6 +133,14 @@ with tempfile.TemporaryDirectory() as directory:
         assert "2/40matches" in press(b'n')
         assert "1/40matches" in press(b'N')
         assert "40/40matches" in press(b'N')  # wraps
+        assert "v/Escback" in press(b'v')
+        assert "SESSIONHISTORY" not in screen.compact()
+        assert "nowrap" in press(b'W')
+        assert "1/40matches" in press(b'n')
+        assert "40/40matches" in press(b'N')
+        assert "SESSIONHISTORY" in press(b'\x1b')  # fullscreen exits before clearing find
+        assert "40/40matches" in screen.compact()
+        press(b'W')
         press(b'f\x15missing detail text')
         assert "0/0matches" in screen.compact()
         assert "40/40matches" in press(b'\x1b')  # cancel restores the prior find

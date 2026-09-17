@@ -104,6 +104,24 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         );
         return;
     }
+    if app.detail_fullscreen {
+        let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).split(area);
+        draw_detail(frame, app, rows[0]);
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(" v/Esc back  W wrap  ←/→ pan (nowrap)  f find  n/N match  ? help"),
+                Line::from(display_text(&app.status)),
+            ]),
+            rows[1],
+        );
+        if app.help {
+            help(frame, area, app);
+        }
+        if app.panel.is_some() {
+            draw_panel(frame, area, app);
+        }
+        return;
+    }
     let rows = Layout::vertical([
         Constraint::Length(2),
         Constraint::Length(5),
@@ -493,7 +511,33 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
     }
 
-    let width = panes[1].width.saturating_sub(2).max(1) as usize;
+    draw_detail(frame, app, panes[1]);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(if transcript {
+                " R resume  f find  n/N match  y copy  [/] failed  / filter  ? help  q quit"
+            } else {
+                " O sort  T source  i stats  z reset  R resume  / filter  ? help  q quit"
+            }),
+            Line::styled(
+                display_text(&app.status),
+                Style::default().fg(if app.loading { ACCENT } else { MUTED }),
+            ),
+        ]),
+        rows[5],
+    );
+    if app.help {
+        help(frame, area, app);
+    }
+    if app.panel.is_some() {
+        draw_panel(frame, area, app);
+    }
+}
+
+fn draw_detail(frame: &mut Frame, app: &mut App, area: Rect) {
+    let transcript = app.session_source.is_some();
+    let multiple_sources = app.totals.sources.len() > 1;
+    let width = area.width.saturating_sub(2).max(1) as usize;
     let selected = app
         .list
         .selected()
@@ -501,24 +545,30 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .copied();
     let collapsed = selected
         .is_some_and(|index| index < app.history.entries.len() && app.tool_collapsed(index));
-    let key = (app.detail_revision, selected, collapsed, width);
+    let key = (
+        app.detail_revision,
+        selected,
+        collapsed,
+        if app.detail_wrap { width } else { 0 },
+    );
     let enabled = app.selected().is_some() && !collapsed;
     if !app.find.cached(key, enabled) {
         let lines = detail_lines(app, multiple_sources);
-        app.find.rebuild(key, lines, enabled);
+        app.find.rebuild_at(key, lines, enabled, &mut app.scroll);
     }
     let show_find = app.find.editing || enabled && !app.find.query.is_empty();
-    let height = panes[1].height.saturating_sub(2 + u16::from(show_find)) as usize;
+    let height = area.height.saturating_sub(2 + u16::from(show_find)) as usize;
     app.detail_page_size = height.saturating_sub(1).max(1);
     app.detail_max_scroll = app.find.prepare(&mut app.scroll, height);
     let title = format!(
-        " {} · line {} · f find ",
+        " {} · line {} · {} · v full · W wrap ",
         if transcript {
             "Details"
         } else {
             "Prompt · Enter opens session"
         },
-        app.scroll + 1
+        app.scroll + 1,
+        if app.detail_wrap { "wrap" } else { "nowrap" }
     );
     let mut block = panel(title).border_style(Style::default().fg(if app.focus == Focus::Detail {
         ACCENT
@@ -531,15 +581,24 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Style::default().fg(ACCENT),
         ));
     }
-    let inner = block.inner(panes[1]);
-    frame.render_widget(block, panes[1]);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
     let content = Rect::new(
         inner.x,
         inner.y + u16::from(show_find),
         inner.width,
         inner.height.saturating_sub(u16::from(show_find)),
     );
-    frame.render_widget(Paragraph::new(app.find.render(app.scroll, height)), content);
+    app.horizontal = if app.detail_wrap {
+        0
+    } else {
+        app.find.reveal_horizontal(app.horizontal, width)
+    };
+    frame.render_widget(
+        Paragraph::new(app.find.render(app.scroll, height))
+            .scroll((0, app.horizontal.min(u16::MAX as usize) as u16)),
+        content,
+    );
     if show_find && inner.height > 0 {
         let available = inner.width.saturating_sub(6) as usize;
         let (query, caret) = if app.find.editing {
@@ -561,26 +620,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         {
             frame.set_cursor_position((inner.x + 6 + caret as u16, inner.y));
         }
-    }
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(if transcript {
-                " R resume  f find  n/N match  y copy  [/] failed  / filter  ? help  q quit"
-            } else {
-                " O sort  T source  i stats  z reset  R resume  / filter  ? help  q quit"
-            }),
-            Line::styled(
-                display_text(&app.status),
-                Style::default().fg(if app.loading { ACCENT } else { MUTED }),
-            ),
-        ]),
-        rows[5],
-    );
-    if app.help {
-        help(frame, area, app);
-    }
-    if app.panel.is_some() {
-        draw_panel(frame, area, app);
     }
 }
 
@@ -934,6 +973,8 @@ fn help(frame: &mut Frame, area: Rect, app: &mut App) {
             },
         ),
         ("Tab / Shift+Tab", "Switch list / details focus"),
+        ("v · W", "Fullscreen details · toggle wrapping"),
+        ("←/→ (nowrap)", "Pan details horizontally when focused"),
         ("a · w · d", "Activity focus · range · clear date"),
         ("←/→ (activity)", "Previous / next day; Enter filters"),
         ("↑/↓ or j/k", "Navigate focused pane"),
@@ -1046,6 +1087,40 @@ mod tests {
     use super::*;
     use crate::history::{Entry, History};
     use ratatui::{Terminal, backend::TestBackend};
+    #[test]
+    fn fullscreen_unwrapped_find_renders_offscreen_unicode_match() {
+        let mut app = App::new(History {
+            entries: vec![Entry {
+                tool: None,
+                source: None,
+                session_id: "demo".into(),
+                ts: 1,
+                text: "prefix ".repeat(50) + "TARGET世界",
+            }],
+            ..History::default()
+        });
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        app.toggle_fullscreen();
+        app.toggle_wrap();
+        app.begin_find();
+        app.find.query = "TARGET世界".into();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(app.horizontal > 0);
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(rendered.contains("TARGET世"));
+        assert!(rendered.contains("v/Esc back"));
+        assert!(!rendered.contains("PROMPT HISTORY"));
+        app.toggle_wrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        assert_eq!(app.horizontal, 0);
+        assert!(app.find.label().starts_with("1/1"));
+    }
     #[test]
     fn help_can_scroll_to_the_end_on_a_small_terminal() {
         let mut app = App::new(History::default());
