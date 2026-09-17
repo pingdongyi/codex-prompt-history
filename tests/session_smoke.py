@@ -61,6 +61,28 @@ with tempfile.TemporaryDirectory() as directory:
 
     try:
         assert "PROMPTHISTORY" in wait_for("Historyreloaded")
+        assert "Enterapply" in press(b'\x06')  # Ctrl+F
+        press(b'\x1b[200~Hello\x1b[201~')
+        assert "1/2records" in screen.compact()
+        press(b'\x1b')  # cancel restores the original empty query
+        assert "2/2records" in screen.compact()
+        press(b'/HellX')
+        assert "Keyboardshortcuts" in press(b'\x1bOP')  # help while editing
+        press(b'\x1b')  # close help, keeping the draft and caret
+        press(b'\x1b[D\x1b[3~o')  # left, Delete, insert o -> Hello
+        press(b'\r')
+        assert "Search:Hello[x]" in screen.compact()
+        press(b'/\x15')  # clear the draft
+        assert "Search:Hello[x]" in press(b'\x1b[A')  # recent query
+        assert "2/2records" in press(b'\x1b[B')  # restore unfinished draft
+        assert "Search:Hello[x]" in press(b'\x1b')  # cancel to confirmed query
+        press(b'x')
+        copied = len(screen.clipboard)
+        press(b'\x1b[200~yYCq\x1b[201~')  # paste outside search invokes nothing
+        assert proc.poll() is None and len(screen.clipboard) == copied
+        assert "Keyboardshortcuts" in press(b'\x1bOP')  # F1
+        assert "Searchhistorystaysinmemory." in press(b'\x1b[F')  # help End
+        press(b'\x1b')
         press(b'y'); wait_for("Copyrequestsentforrecordcontent")
         assert screen.clipboard[-1] == "Hello session"
         press(b'Y'); wait_for("CopyrequestsentforsessionID")
@@ -79,6 +101,9 @@ with tempfile.TemporaryDirectory() as directory:
         press(b'\r')
         rendered = wait_for("SESSIONHISTORY")
         assert "Timeline" in rendered and "demo-model" in rendered and "ASSISTANT" in rendered and "Toolactivity" in rendered, rendered
+        press(b'/')
+        assert "Search:Hello[x]" in press(b'\x1b[A')  # shared query history
+        press(b'\x1b')
         assert press(b'\t')  # detail focus
         assert press(b'\x1b[6~')  # page down in the preview
         assert press(b'g')  # first preview line

@@ -9,12 +9,53 @@ pub enum Focus {
     Activity,
 }
 
+struct RecordMark {
+    source: Option<std::path::PathBuf>,
+    session_id: String,
+    ts: i64,
+    digest: u64,
+}
+impl RecordMark {
+    fn digest(entry: &Entry) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        entry.text.hash(&mut hash);
+        hash.finish()
+    }
+    fn new(entry: &Entry) -> Self {
+        Self {
+            source: entry.source.clone(),
+            session_id: entry.session_id.clone(),
+            ts: entry.ts,
+            digest: Self::digest(entry),
+        }
+    }
+    fn matches(&self, entry: &Entry) -> bool {
+        self.source == entry.source
+            && self.session_id == entry.session_id
+            && self.ts == entry.ts
+            && self.digest == Self::digest(entry)
+    }
+}
+struct SearchBookmark {
+    query: String,
+    mark: Option<RecordMark>,
+    occurrence: usize,
+    group: bool,
+    row: usize,
+    scroll: usize,
+    focus: Focus,
+    activity_cursor: chrono::NaiveDate,
+}
+
 pub struct App {
     pub history: History,
     pub visible: Vec<usize>,
     pub list: ListState,
     pub query: String,
     pub searching: bool,
+    pub search: crate::search::Editor,
+    search_bookmark: Option<SearchBookmark>,
     pub session: Option<String>,
     pub session_origin: Option<std::path::PathBuf>,
     pub source_filter: Option<std::path::PathBuf>,
@@ -30,6 +71,9 @@ pub struct App {
     pub oldest_first: bool,
     pub scroll: usize,
     pub help: bool,
+    pub help_scroll: usize,
+    pub help_max_scroll: usize,
+    pub help_page: usize,
     pub status: String,
     pub loading: bool,
     pub transcript: Option<Box<App>>,
@@ -49,6 +93,8 @@ impl App {
             list: ListState::default(),
             query: String::new(),
             searching: false,
+            search: crate::search::Editor::default(),
+            search_bookmark: None,
             session: None,
             session_origin: None,
             source_filter: None,
@@ -64,6 +110,9 @@ impl App {
             oldest_first: false,
             scroll: 0,
             help: false,
+            help_scroll: 0,
+            help_max_scroll: 0,
+            help_page: 1,
             status: String::new(),
             loading: false,
             transcript: None,
@@ -76,6 +125,84 @@ impl App {
         };
         app.filter();
         app
+    }
+
+    pub fn begin_search(&mut self) {
+        if self.searching {
+            return;
+        }
+        let selected = self
+            .list
+            .selected()
+            .and_then(|position| self.visible.get(position))
+            .copied();
+        let group = selected.and_then(|index| self.groups.get(&index));
+        let index = group.map(|range| range.start).or(selected);
+        let mark = index
+            .and_then(|index| self.history.entries.get(index))
+            .map(RecordMark::new);
+        let occurrence = mark.as_ref().zip(index).map_or(0, |(mark, index)| {
+            self.history.entries[..index]
+                .iter()
+                .filter(|entry| mark.matches(entry))
+                .count()
+        });
+        self.search_bookmark = Some(SearchBookmark {
+            query: self.query.clone(),
+            mark,
+            occurrence,
+            group: group.is_some(),
+            row: self
+                .list
+                .selected()
+                .unwrap_or(0)
+                .saturating_sub(self.list.offset()),
+            scroll: self.scroll,
+            focus: self.focus,
+            activity_cursor: self.activity_cursor,
+        });
+        self.search.begin(&self.query);
+        self.searching = true;
+    }
+
+    pub fn confirm_search(&mut self) {
+        self.search.remember(&self.query);
+        self.search_bookmark = None;
+        self.searching = false;
+    }
+
+    pub fn cancel_search(&mut self) {
+        self.searching = false;
+        if let Some(bookmark) = self.search_bookmark.take() {
+            self.query = bookmark.query;
+            self.filter();
+            if let Some(index) = bookmark.mark.as_ref().and_then(|mark| {
+                self.history
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, entry)| mark.matches(entry))
+                    .nth(bookmark.occurrence)
+                    .map(|(index, _)| index)
+            }) {
+                let target = if bookmark.group {
+                    self.group_for_entry(index).map_or(index, |(&id, _)| id)
+                } else {
+                    index
+                };
+                if let Some(position) = self.visible_position(target) {
+                    self.list.select(Some(position));
+                    *self.list.offset_mut() = position.saturating_sub(bookmark.row);
+                    self.scroll = bookmark.scroll;
+                }
+            }
+            self.focus = bookmark.focus;
+            let (start, end) = self
+                .activity
+                .bounds(self.activity_window, chrono::Local::now().date_naive());
+            self.activity_cursor = bookmark.activity_cursor.clamp(start, end);
+        }
+        self.search.begin(&self.query);
     }
 
     pub fn selected(&self) -> Option<&Entry> {
@@ -628,6 +755,42 @@ pub fn is_failed_tool(entry: &Entry) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn search_cancel_restores_query_selection_and_scroll_after_reload() {
+        let mut a = app();
+        a.move_selection(2);
+        a.scroll = 5;
+        a.focus = Focus::Detail;
+        a.begin_search();
+        a.search.insert(&mut a.query, "no matching records");
+        a.filter();
+        assert!(a.visible.is_empty());
+        let mut updated = app().history;
+        updated.entries.insert(
+            0,
+            Entry {
+                tool: None,
+                source: None,
+                session_id: "new".into(),
+                ts: 4,
+                text: "new prompt".into(),
+            },
+        );
+        a.replace_history(updated);
+        a.cancel_search();
+        assert!(a.query.is_empty());
+        assert!(!a.searching);
+        assert_eq!(a.selected().unwrap().ts, 1);
+        assert_eq!(a.scroll, 5);
+        assert_eq!(a.focus, Focus::Detail);
+        assert!(a.search.history.borrow().is_empty());
+        a.begin_search();
+        a.search.insert(&mut a.query, "RUST");
+        a.filter();
+        a.confirm_search();
+        assert_eq!(a.search.history.borrow().as_slice(), &["RUST"]);
+        assert_eq!(a.visible.len(), 2);
+    }
     #[test]
     fn date_filter_uses_local_days_without_hiding_the_chart_context() {
         let today = chrono::Local::now().date_naive();

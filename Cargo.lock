@@ -279,7 +279,7 @@ dependencies = [
 
 [[package]]
 name = "codex-prompt-history"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -290,6 +290,8 @@ dependencies = [
  "serde",
  "serde_json",
  "textwrap",
+ "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]

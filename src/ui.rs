@@ -220,9 +220,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
     }
     let search_title = if app.searching {
-        " Search · typing · Enter to finish "
+        " Search · Enter apply · Esc cancel "
     } else {
-        " Search · / to edit "
+        " Search · / or Ctrl+F to edit "
     };
     let placeholder = app.query.is_empty() && !app.searching;
     let query = if placeholder {
@@ -234,21 +234,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else {
         &app.query
     };
-    // Keep the tail of long queries visible without splitting a Unicode character.
-    let mut used = 0;
-    let query_tail: String = display_text(query)
-        .chars()
-        .rev()
-        .take_while(|c| {
-            used += Span::raw(c.to_string()).width();
-            used <= rows[2].width.saturating_sub(2) as usize
-        })
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
+    let width = rows[2].width.saturating_sub(2) as usize;
+    let (query_display, caret) = if app.searching {
+        let (text, column) = app.search.view(&app.query, width);
+        (text, Some(column))
+    } else {
+        (elide(query, width), None)
+    };
     frame.render_widget(
-        Paragraph::new(query_tail)
+        Paragraph::new(query_display)
             .block(
                 panel(search_title).border_style(Style::default().fg(if app.searching {
                     ACCENT
@@ -259,6 +253,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             .style(Style::default().fg(if placeholder { MUTED } else { Color::Reset })),
         rows[2],
     );
+
+    if let Some(column) = caret
+        && !app.help
+        && width > 0
+    {
+        frame.set_cursor_position((rows[2].x + 1 + column as u16, rows[2].y + 1));
+    }
 
     let count = app.matched_count;
     frame.render_widget(
@@ -685,11 +686,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         rows[5],
     );
     if app.help {
-        help(frame, area, transcript);
+        help(frame, area, app);
     }
 }
 
-fn help(frame: &mut Frame, area: Rect, transcript: bool) {
+fn help(frame: &mut Frame, area: Rect, app: &mut App) {
+    let transcript = app.session_source.is_some();
     let width = area.width.min(64);
     let height = area.height.min(29);
     let popup = Rect::new(
@@ -715,7 +717,7 @@ fn help(frame: &mut Frame, area: Rect, transcript: bool) {
         ("Home/End g/G", "First / last item, line, or day"),
         ("PgUp/PgDn", "Page through focused pane"),
         ("←/→ or K/J", "Scroll prompt preview"),
-        ("/", "Edit live search"),
+        ("/ or Ctrl+F", "Edit live search"),
         ("x", "Clear search"),
         ("t", "Cycle source (prompt history)"),
         (
@@ -726,7 +728,13 @@ fn help(frame: &mut Frame, area: Rect, transcript: bool) {
                 "Available in session history"
             },
         ),
-        ("Enter / Esc", "Finish search (keep query)"),
+        ("Enter (search)", "Apply query and remember it"),
+        ("Esc (search)", "Cancel query; restore selection"),
+        ("←→ Home/End", "Move search caret (while editing)"),
+        ("Backspace/Del", "Delete before / after search caret"),
+        ("Ctrl+A / E", "Search start / end"),
+        ("Ctrl+W", "Delete previous search word"),
+        ("↑↓ (search)", "Recall recent queries / draft"),
         ("Ctrl+U", "Clear query while typing"),
         (
             "s",
@@ -765,12 +773,44 @@ fn help(frame: &mut Frame, area: Rect, transcript: bool) {
         .collect();
     lines.push(Line::from(""));
     lines.push(Line::from(
-        "Timestamps use local time. Any key closes help.",
+        "Timestamps use local time. Search history stays in memory.",
     ));
+    let block = panel(" Keyboard shortcuts ").title_bottom(Span::styled(
+        " ↑↓ / PgUp PgDn scroll · Esc closes ",
+        Style::default().fg(ACCENT),
+    ));
+    let inner = block.inner(popup);
+    let width = inner.width.max(1) as usize;
+    let wrapped: Vec<Line> = lines
+        .into_iter()
+        .flat_map(|line| {
+            let text: String = line
+                .spans
+                .into_iter()
+                .map(|span| span.content.into_owned())
+                .collect();
+            if text.is_empty() {
+                vec![Line::from("")]
+            } else {
+                textwrap::wrap(&text, width)
+                    .into_iter()
+                    .map(|part| Line::from(part.into_owned()))
+                    .collect()
+            }
+        })
+        .collect();
+    app.help_page = inner.height.saturating_sub(1).max(1) as usize;
+    app.help_max_scroll = wrapped.len().saturating_sub(inner.height as usize);
+    app.help_scroll = app.help_scroll.min(app.help_max_scroll);
     frame.render_widget(
-        Paragraph::new(lines)
-            .block(panel(" Keyboard shortcuts "))
-            .wrap(Wrap { trim: false }),
+        Paragraph::new(
+            wrapped
+                .into_iter()
+                .skip(app.help_scroll)
+                .take(inner.height as usize)
+                .collect::<Vec<_>>(),
+        )
+        .block(block),
         popup,
     );
 }
@@ -780,6 +820,25 @@ mod tests {
     use super::*;
     use crate::history::{Entry, History};
     use ratatui::{Terminal, backend::TestBackend};
+    #[test]
+    fn help_can_scroll_to_the_end_on_a_small_terminal() {
+        let mut app = App::new(History::default());
+        app.help = true;
+        let mut terminal = Terminal::new(TestBackend::new(60, 24)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(app.help_max_scroll > 0);
+        app.help_scroll = usize::MAX;
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        assert_eq!(app.help_scroll, app.help_max_scroll);
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(rendered.contains("stays in memory."));
+    }
     #[test]
     fn tool_summary_leaves_room_for_failure_status() {
         let entry = Entry {

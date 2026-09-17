@@ -4,6 +4,7 @@ mod clipboard;
 mod formatting;
 mod history;
 mod loader;
+mod search;
 mod session;
 mod tool_summary;
 mod ui;
@@ -63,6 +64,7 @@ fn main() -> Result<()> {
     let mut clipboard = clipboard::Clipboard::new(args.clipboard)?;
     start_load(&mut app, &mut loader, loader::Job::History(paths.clone()));
     let mut terminal = ratatui::init();
+    let paste_enabled = crossterm::execute!(io::stdout(), event::EnableBracketedPaste).is_ok();
     let result = run(
         &mut terminal,
         &mut app,
@@ -71,6 +73,9 @@ fn main() -> Result<()> {
         &mut loader,
         &mut clipboard,
     );
+    if paste_enabled {
+        let _ = crossterm::execute!(io::stdout(), event::DisableBracketedPaste);
+    }
     ratatui::restore();
     result
 }
@@ -111,7 +116,19 @@ fn run(
         if !event::poll(Duration::from_millis(200))? {
             continue;
         }
-        let Event::Key(key) = event::read()? else {
+        let event = event::read()?;
+        if let Event::Paste(text) = &event {
+            let app = match root.transcript.as_deref_mut() {
+                Some(app) => app,
+                None => &mut *root,
+            };
+            if app.searching && !app.help {
+                app.search.insert(&mut app.query, text);
+                app.filter();
+            }
+            continue;
+        }
+        let Event::Key(key) = event else {
             continue;
         };
         if key.kind == KeyEventKind::Release {
@@ -160,7 +177,13 @@ fn run(
             continue;
         }
         let ready_for_reload = root.transcript.as_deref().unwrap_or(root);
-        if key.code == KeyCode::Char('r') && !ready_for_reload.searching && !ready_for_reload.help {
+        if key.code == KeyCode::Char('r')
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && !ready_for_reload.searching
+            && !ready_for_reload.help
+        {
             let job = if let Some(path) = &ready_for_reload.session_source {
                 loader::Job::ReloadSession(path.clone())
             } else {
@@ -174,30 +197,39 @@ fn run(
             None => root,
         };
         if app.help {
-            app.help = false;
+            match key.code {
+                KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('q' | '?') => app.help = false,
+                KeyCode::Down | KeyCode::Char('j') => {
+                    app.help_scroll = app.help_scroll.saturating_add(1).min(app.help_max_scroll)
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    app.help_scroll = app.help_scroll.saturating_sub(1)
+                }
+                KeyCode::PageDown => {
+                    app.help_scroll = app
+                        .help_scroll
+                        .saturating_add(app.help_page)
+                        .min(app.help_max_scroll)
+                }
+                KeyCode::PageUp => app.help_scroll = app.help_scroll.saturating_sub(app.help_page),
+                KeyCode::Home => app.help_scroll = 0,
+                KeyCode::End => app.help_scroll = app.help_max_scroll,
+                _ => {}
+            }
             continue;
         }
         if app.searching {
-            match key.code {
-                KeyCode::Esc | KeyCode::Enter => app.searching = false,
-                KeyCode::Backspace => {
-                    app.query.pop();
-                    app.filter();
-                }
-                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.query.clear();
-                    app.filter();
-                }
-                KeyCode::Char(c)
-                    if !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                {
-                    app.query.push(c);
-                    app.filter();
-                }
-                _ => {}
-            }
+            handle_search_key(app, key);
+            continue;
+        }
+        if key.code == KeyCode::Char('f') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            app.begin_search();
+            continue;
+        }
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
             continue;
         }
         match key.code {
@@ -239,7 +271,7 @@ fn run(
                 app.query.clear();
                 app.filter();
             }
-            KeyCode::Char('/') => app.searching = true,
+            KeyCode::Char('/') => app.begin_search(),
             KeyCode::Esc => {}
             KeyCode::Char('j') | KeyCode::Down => app.navigate(1),
             KeyCode::Char('k') | KeyCode::Up => app.navigate(-1),
@@ -254,11 +286,97 @@ fn run(
                 app.oldest_first = !app.oldest_first;
                 app.filter();
             }
-            KeyCode::Char('?') => app.help = true,
+            KeyCode::Char('?') | KeyCode::F(1) => {
+                app.help = true;
+                app.help_scroll = 0;
+            }
             _ => {}
         }
     }
     Ok(())
+}
+
+fn handle_search_key(app: &mut App, key: event::KeyEvent) {
+    let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    let changed = match key.code {
+        KeyCode::F(1) => {
+            app.help = true;
+            app.help_scroll = 0;
+            false
+        }
+        KeyCode::Esc => {
+            app.cancel_search();
+            return;
+        }
+        KeyCode::Enter => {
+            app.confirm_search();
+            return;
+        }
+        KeyCode::Left => {
+            app.search.left(&app.query);
+            false
+        }
+        KeyCode::Right => {
+            app.search.right(&app.query);
+            false
+        }
+        KeyCode::Home => {
+            app.search.home();
+            false
+        }
+        KeyCode::End => {
+            app.search.end(&app.query);
+            false
+        }
+        KeyCode::Char('a') if control => {
+            app.search.home();
+            false
+        }
+        KeyCode::Char('e') if control => {
+            app.search.end(&app.query);
+            false
+        }
+        KeyCode::Char('u') if control => {
+            app.search.clear(&mut app.query);
+            true
+        }
+        KeyCode::Char('w') if control => {
+            app.search.delete_word(&mut app.query);
+            true
+        }
+        KeyCode::Backspace if control => {
+            app.search.delete_word(&mut app.query);
+            true
+        }
+        KeyCode::Backspace => {
+            app.search.backspace(&mut app.query);
+            true
+        }
+        KeyCode::Delete => {
+            app.search.delete(&mut app.query);
+            true
+        }
+        KeyCode::Up => {
+            app.search.recall(&mut app.query, true);
+            true
+        }
+        KeyCode::Down => {
+            app.search.recall(&mut app.query, false);
+            true
+        }
+        KeyCode::Char(c)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            app.search.insert(&mut app.query, &c.to_string());
+            true
+        }
+        _ => false,
+    };
+    if changed {
+        app.filter();
+    }
 }
 
 fn start_load(root: &mut App, loader: &mut loader::Loader, job: loader::Job) {
@@ -311,6 +429,7 @@ fn apply_load_events(root: &mut App, loader: &mut loader::Loader) {
                         if target == loader::Target::OpenSession =>
                     {
                         let mut app = App::from_session(session);
+                        app.search.history = root.search.history.clone();
                         app.status = if cached {
                             "Session loaded from memory cache"
                         } else {

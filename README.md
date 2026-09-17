@@ -65,8 +65,14 @@ Archives and `SHA256SUMS` are written to `dist/`. Verify downloads on Linux with
 | `Home` / `End`, `g` / `G` | First / last item or detail line |
 | `PgUp` / `PgDn` | Move ten list items or one page of details |
 | `←` / `→`, `K` / `J` | Scroll the full prompt |
-| `/` | Edit case-insensitive live search |
-| `Enter` / `Esc` while searching | Finish editing, retaining search |
+| `/` / `Ctrl+F` | Edit case-insensitive live search |
+| `Enter` while searching | Confirm query and remember it |
+| `Esc` while searching | Cancel editing and restore the previous query and selection |
+| `←` / `→`, `Home` / `End` while searching | Move the search caret |
+| `Backspace` / `Delete` while searching | Delete before / after the caret |
+| `Ctrl+A` / `Ctrl+E` while searching | Move to start / end |
+| `Ctrl+W` while searching | Delete the previous word |
+| `↑` / `↓` while searching | Recall recent queries or restore the draft |
 | `Ctrl+U` while searching | Clear query |
 | `s` | Toggle filtering to the selected session |
 | `t` | Cycle loaded sources: all, alpha, beta, gamma (when present) |
@@ -75,12 +81,20 @@ Archives and `SHA256SUMS` are written to `dist/`. Verify downloads on Linux with
 | `o` | Toggle newest / oldest first |
 | `r` | Reload the file |
 | `Esc` | Leave activity focus; otherwise clear search, session, date, then source; return from a session when no filters remain |
-| `?` | Show keyboard help |
+| `?` / `F1` | Open keyboard help; arrows and page keys scroll it |
 | `q` / `Ctrl+C` | Quit |
 
 The activity chart follows source, search, and session filters; the selected date filters the list while the chart keeps the surrounding days visible. Search matches literal substrings in prompt text or session IDs. Reload is manual; a failed reload preserves the current data. History and session files are read-only; content is copied out only when a copy shortcut is explicitly pressed.
 
 Repeat `--file` to merge histories in timestamp order. Without `--file`, only `~/.codex/history.jsonl` is loaded; other directories are never discovered automatically. Multi-file views label each prompt's source. Session filtering distinguishes identical session IDs from different files, and `Enter` opens the source file's sibling `sessions` directory. `--sessions-dir` explicitly overrides that directory for all sources. Repeating the same file loads it once. Every requested file must be readable; reload (`r`) refreshes all sources together and preserves the current data if any file cannot be read.
+
+## Search editing and help
+
+Search stays live while editing, with a visible caret and horizontal scrolling for long queries. Arrow keys and deletion respect full Unicode graphemes, including combining accents and joined emoji. `Enter` commits the draft; `Esc` restores the query and position from before editing, including across reloads when that record remains available. Confirmed queries form an in-memory, deduplicated history of up to 20 entries shared between prompt and session views. `↑` recalls older queries and `↓` eventually restores the unfinished draft. Search history is never written to disk.
+
+Bracketed paste is enabled where supported. In search, pasted line breaks and tabs become spaces and other control characters are removed. Bracketed paste outside search is ignored so pasted characters cannot invoke commands. Existing unmodified shortcuts remain available outside search; unrecognized Ctrl/Alt combinations do not trigger ordinary character shortcuts.
+
+`?` or `F1` opens a scrollable help panel. Use arrows, Page Up/Down, or Home/End to navigate, and Esc, q, ?, or F1 to close it. The underlying view and filters stay intact.
 
 ## Activity dates
 
@@ -126,7 +140,7 @@ Press `]` / `[` in a session to jump to the next / previous failed tool. Navigat
 
 Results are labeled with their originating tool name. Expanded results prioritize readable output and error output, with explicit completion/failure indicators when recorded. Content wrappers are flattened; timing, other metadata, and call references appear below the output.
 
-Use `/` to search session text, tool names, or roles; `↑` / `↓` to select an entry; `←` / `→` to scroll its content; `o` to reverse order; and `r` to reload the session. `Esc` first clears a session search; with no active filters it returns to prompt history, preserving its selection and filters. While editing search, `Esc` finishes editing first; `Ctrl+U` clears the query.
+Use `/` to search session text, tool names, or roles; `↑` / `↓` to select an entry; `←` / `→` to scroll its content; `o` to reverse order; and `r` to reload the session. `Esc` first clears a session search; with no active filters it returns to prompt history, preserving its selection and filters. While editing search, `Esc` cancels editing and restores the earlier query, selection, and preview position when the record still exists; `Enter` confirms and `Ctrl+U` clears the draft.
 
 Session files are discovered recursively by metadata ID and loaded in the background only when opened. Missing logs show an error without closing the browser. With a custom history file, the default session directory is its sibling `sessions` folder. Override this for another directory or archived logs:
 
