@@ -1,6 +1,7 @@
 mod activity;
 mod app;
 mod clipboard;
+mod detail_find;
 mod formatting;
 mod history;
 mod loader;
@@ -122,9 +123,14 @@ fn run(
                 Some(app) => app,
                 None => &mut *root,
             };
-            if app.searching && !app.help {
-                app.search.insert(&mut app.query, text);
-                app.filter();
+            if !app.help {
+                if app.find.editing {
+                    app.find.editor.insert(&mut app.find.query, text);
+                    app.find.changed();
+                } else if app.searching {
+                    app.search.insert(&mut app.query, text);
+                    app.filter();
+                }
             }
             continue;
         }
@@ -142,7 +148,7 @@ fn run(
                 Some(app) => app,
                 None => &mut *root,
             };
-            if !current.searching && !current.help {
+            if !current.is_editing() && !current.help {
                 if loader.pending.is_some() {
                     loader.cancel();
                     current.loading = false;
@@ -154,6 +160,10 @@ fn run(
                     current.focus = app::Focus::List;
                     continue;
                 }
+                if current.focus == app::Focus::Detail && !current.find.query.is_empty() {
+                    current.find.clear();
+                    continue;
+                }
                 if current.clear_one_filter() {
                     continue;
                 }
@@ -163,7 +173,10 @@ fn run(
                 }
             }
         }
-        if key.code == KeyCode::Enter && root.transcript.is_none() && !root.searching && !root.help
+        if key.code == KeyCode::Enter
+            && root.transcript.is_none()
+            && !root.is_editing()
+            && !root.help
         {
             if root.focus == app::Focus::Activity {
                 root.apply_activity_date();
@@ -181,7 +194,7 @@ fn run(
             && !key
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-            && !ready_for_reload.searching
+            && !ready_for_reload.is_editing()
             && !ready_for_reload.help
         {
             let job = if let Some(path) = &ready_for_reload.session_source {
@@ -218,7 +231,7 @@ fn run(
             }
             continue;
         }
-        if app.searching {
+        if app.is_editing() {
             handle_search_key(app, key);
             continue;
         }
@@ -257,6 +270,10 @@ fn run(
                 app.toggle_tool()
             }
             KeyCode::Char('q') => break,
+            KeyCode::Char('f') => app.begin_find(),
+            KeyCode::Char('F') => app.find.clear(),
+            KeyCode::Char('n') => app.jump_detail_match(true),
+            KeyCode::Char('N') => app.jump_detail_match(false),
             KeyCode::Char('a') if app.session_source.is_none() => app.focus_activity(),
             KeyCode::Char('w') if app.session_source.is_none() => app.cycle_activity_window(),
             KeyCode::Char('d') if app.session_source.is_none() => {
@@ -297,71 +314,95 @@ fn run(
 }
 
 fn handle_search_key(app: &mut App, key: event::KeyEvent) {
-    let control = key.modifiers.contains(KeyModifiers::CONTROL);
-    let changed = match key.code {
+    match key.code {
         KeyCode::F(1) => {
             app.help = true;
             app.help_scroll = 0;
-            false
+            return;
         }
         KeyCode::Esc => {
-            app.cancel_search();
+            if app.find.editing {
+                if let Some((scroll, focus)) = app.find.cancel() {
+                    app.scroll = scroll;
+                    app.focus = focus;
+                }
+            } else {
+                app.cancel_search();
+            }
             return;
         }
         KeyCode::Enter => {
-            app.confirm_search();
+            if app.find.editing {
+                app.find.confirm();
+            } else {
+                app.confirm_search();
+            }
             return;
         }
+        _ => {}
+    }
+    if app.find.editing {
+        if edit_query(&mut app.find.editor, &mut app.find.query, key) {
+            app.find.changed();
+        }
+    } else if edit_query(&mut app.search, &mut app.query, key) {
+        app.filter();
+    }
+}
+
+fn edit_query(editor: &mut search::Editor, query: &mut String, key: event::KeyEvent) -> bool {
+    let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
         KeyCode::Left => {
-            app.search.left(&app.query);
+            editor.left(query);
             false
         }
         KeyCode::Right => {
-            app.search.right(&app.query);
+            editor.right(query);
             false
         }
         KeyCode::Home => {
-            app.search.home();
+            editor.home();
             false
         }
         KeyCode::End => {
-            app.search.end(&app.query);
+            editor.end(query);
             false
         }
         KeyCode::Char('a') if control => {
-            app.search.home();
+            editor.home();
             false
         }
         KeyCode::Char('e') if control => {
-            app.search.end(&app.query);
+            editor.end(query);
             false
         }
         KeyCode::Char('u') if control => {
-            app.search.clear(&mut app.query);
+            editor.clear(query);
             true
         }
         KeyCode::Char('w') if control => {
-            app.search.delete_word(&mut app.query);
+            editor.delete_word(query);
             true
         }
         KeyCode::Backspace if control => {
-            app.search.delete_word(&mut app.query);
+            editor.delete_word(query);
             true
         }
         KeyCode::Backspace => {
-            app.search.backspace(&mut app.query);
+            editor.backspace(query);
             true
         }
         KeyCode::Delete => {
-            app.search.delete(&mut app.query);
+            editor.delete(query);
             true
         }
         KeyCode::Up => {
-            app.search.recall(&mut app.query, true);
+            editor.recall(query, true);
             true
         }
         KeyCode::Down => {
-            app.search.recall(&mut app.query, false);
+            editor.recall(query, false);
             true
         }
         KeyCode::Char(c)
@@ -369,13 +410,10 @@ fn handle_search_key(app: &mut App, key: event::KeyEvent) {
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
         {
-            app.search.insert(&mut app.query, &c.to_string());
+            editor.insert(query, &c.to_string());
             true
         }
         _ => false,
-    };
-    if changed {
-        app.filter();
     }
 }
 

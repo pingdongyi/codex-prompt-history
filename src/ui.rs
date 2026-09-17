@@ -517,6 +517,94 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     let width = panes[1].width.saturating_sub(2).max(1) as usize;
+    let selected = app
+        .list
+        .selected()
+        .and_then(|position| app.visible.get(position))
+        .copied();
+    let collapsed = selected
+        .is_some_and(|index| index < app.history.entries.len() && app.tool_collapsed(index));
+    let key = (app.detail_revision, selected, collapsed, width);
+    let enabled = app.selected().is_some() && !collapsed;
+    if !app.find.cached(key, enabled) {
+        let lines = detail_lines(app, multiple_sources);
+        app.find.rebuild(key, lines, enabled);
+    }
+    let show_find = app.find.editing || enabled && !app.find.query.is_empty();
+    let height = panes[1].height.saturating_sub(2 + u16::from(show_find)) as usize;
+    app.detail_page_size = height.saturating_sub(1).max(1);
+    app.detail_max_scroll = app.find.prepare(&mut app.scroll, height);
+    let title = format!(
+        " {} · line {} · f find ",
+        if transcript {
+            "Details"
+        } else {
+            "Prompt · Enter opens session"
+        },
+        app.scroll + 1
+    );
+    let mut block = panel(title).border_style(Style::default().fg(if app.focus == Focus::Detail {
+        ACCENT
+    } else {
+        MUTED
+    }));
+    if show_find {
+        block = block.title_bottom(Span::styled(
+            format!(" {} ", app.find.label()),
+            Style::default().fg(ACCENT),
+        ));
+    }
+    let inner = block.inner(panes[1]);
+    frame.render_widget(block, panes[1]);
+    let content = Rect::new(
+        inner.x,
+        inner.y + u16::from(show_find),
+        inner.width,
+        inner.height.saturating_sub(u16::from(show_find)),
+    );
+    frame.render_widget(Paragraph::new(app.find.render(app.scroll, height)), content);
+    if show_find && inner.height > 0 {
+        let available = inner.width.saturating_sub(6) as usize;
+        let (query, caret) = if app.find.editing {
+            let (text, caret) = app.find.editor.view(&app.find.query, available);
+            (text, Some(caret))
+        } else {
+            (elide(&app.find.query, available), None)
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Find: ", Style::default().fg(ACCENT)),
+                Span::raw(query),
+            ])),
+            Rect::new(inner.x, inner.y, inner.width, 1),
+        );
+        if let Some(caret) = caret
+            && available > 0
+            && !app.help
+        {
+            frame.set_cursor_position((inner.x + 6 + caret as u16, inner.y));
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(if transcript {
+                " f find  n/N match  y copy  [/] failed  / filter  Tab focus  ? help  q quit"
+            } else {
+                " f find  n/N match  y copy  a dates  / filter  s session  t source  ? help  q quit"
+            }),
+            Line::styled(
+                display_text(&app.status),
+                Style::default().fg(if app.loading { ACCENT } else { MUTED }),
+            ),
+        ]),
+        rows[5],
+    );
+    if app.help {
+        help(frame, area, app);
+    }
+}
+
+fn detail_lines(app: &App, multiple_sources: bool) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if let Some(range) = app.selected_group() {
         lines.push(Line::styled(
@@ -530,11 +618,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             "c: collapse all tool groups.",
             "/: search includes all hidden tools.",
         ] {
-            lines.extend(
-                textwrap::wrap(text, width)
-                    .into_iter()
-                    .map(|line| Line::from(line.into_owned())),
-            );
+            lines.push(Line::from(text));
         }
         lines.push(Line::from(""));
         let mut counts = std::collections::BTreeMap::new();
@@ -542,43 +626,37 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             *counts.entry(&entry.session_id).or_insert(0) += 1;
         }
         for (name, count) in counts {
-            lines.extend(
-                textwrap::wrap(&format!("{} × {count}", display_text(name)), width)
-                    .into_iter()
-                    .map(|line| Line::from(line.into_owned())),
-            );
+            lines.push(Line::from(format!("{} × {count}", display_text(name))));
         }
     } else if let Some(entry) = app.selected() {
         if multiple_sources && let Some(source) = &entry.source {
-            lines.extend(
-                textwrap::wrap(
-                    &format!("Source: {}", display_text(&source.display().to_string())),
-                    width,
-                )
-                .into_iter()
-                .map(|line| Line::styled(line.into_owned(), Style::default().fg(MUTED))),
-            );
+            lines.push(Line::styled(
+                format!("Source: {}", display_text(&source.display().to_string())),
+                Style::default().fg(MUTED),
+            ));
         }
         lines.push(Line::styled(
             timestamp(entry.ts),
             Style::default().fg(ACCENT),
         ));
-        for line in textwrap::wrap(
-            &format!(
+        lines.push(Line::styled(
+            format!(
                 "{}: {}",
-                if transcript { "Role" } else { "Session" },
+                if app.session_source.is_some() {
+                    "Role"
+                } else {
+                    "Session"
+                },
                 display_text(&entry.session_id)
             ),
-            width,
-        ) {
-            lines.push(Line::styled(line.into_owned(), Style::default().fg(MUTED)));
-        }
+            Style::default().fg(MUTED),
+        ));
         lines.push(Line::from(""));
         let collapsed = app
             .list
             .selected()
-            .and_then(|i| app.visible.get(i))
-            .is_some_and(|&i| app.tool_collapsed(i));
+            .and_then(|position| app.visible.get(position))
+            .is_some_and(|&index| app.tool_collapsed(index));
         let body = if collapsed {
             let summary = entry
                 .text
@@ -598,96 +676,32 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             crate::formatting::typeset(&entry.text)
         };
         for line in display_text(&body).split('\n') {
-            if line.is_empty() {
-                lines.push(Line::from(""));
+            let style = if app.session_source.is_some() && crate::app::is_tool(entry) {
+                if line.starts_with("FAILED")
+                    || line.starts_with("Failed")
+                    || line == "ERROR OUTPUT"
+                {
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+                } else if line.starts_with("COMPLETED") || line.starts_with("Completed") {
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
+                } else if matches!(line, "OUTPUT" | "INPUT" | "RESULT") {
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+                } else if matches!(line, "DETAILS" | "CALL REFERENCE") {
+                    Style::default().fg(MUTED)
+                } else {
+                    Style::default()
+                }
             } else {
-                lines.extend(
-                    textwrap::wrap(
-                        line,
-                        textwrap::Options::new(width).subsequent_indent(
-                            &" ".repeat(
-                                line.chars()
-                                    .take_while(|c| *c == ' ')
-                                    .count()
-                                    .min(width.saturating_sub(1)),
-                            ),
-                        ),
-                    )
-                    .into_iter()
-                    .map(|s| {
-                        let style = if transcript && crate::app::is_tool(entry) {
-                            if line.starts_with("FAILED")
-                                || line.starts_with("Failed")
-                                || line == "ERROR OUTPUT"
-                            {
-                                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-                            } else if line.starts_with("COMPLETED") || line.starts_with("Completed")
-                            {
-                                Style::default()
-                                    .fg(Color::Green)
-                                    .add_modifier(Modifier::BOLD)
-                            } else if matches!(line, "OUTPUT" | "INPUT" | "RESULT") {
-                                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
-                            } else if line == "DETAILS" || line == "CALL REFERENCE" {
-                                Style::default().fg(MUTED)
-                            } else {
-                                Style::default()
-                            }
-                        } else {
-                            Style::default()
-                        };
-                        Line::styled(s.into_owned(), style)
-                    }),
-                );
-            }
+                Style::default()
+            };
+            lines.push(Line::styled(line.to_owned(), style));
         }
     } else {
         lines.push(Line::from("Select a prompt to read it here."));
     }
-    let height = panes[1].height.saturating_sub(2) as usize;
-    app.detail_page_size = height.saturating_sub(1).max(1);
-    app.detail_max_scroll = lines.len().saturating_sub(height);
-    app.scroll = app.scroll.min(app.detail_max_scroll);
-    let title = format!(
-        " {} · line {} · ←/→ scroll ",
-        if transcript {
-            "Details"
-        } else {
-            "Prompt · Enter opens session"
-        },
-        app.scroll + 1
-    );
-    frame.render_widget(
-        Paragraph::new(
-            lines
-                .into_iter()
-                .skip(app.scroll)
-                .take(height)
-                .collect::<Vec<_>>(),
-        )
-        .block(panel(title).border_style(Style::default().fg(
-            if app.focus == Focus::Detail {
-                ACCENT
-            } else {
-                MUTED
-            },
-        ))),
-        panes[1],
-    );
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(if transcript {
-                " y content  Y session ID  C command  [/] failed  / search  Tab focus  ? help  q quit"
-            } else {
-                " y content  Y session ID  a dates  Tab focus  / search  s session  t source  ? help  q quit"
-            }),
-            Line::styled(display_text(&app.status), Style::default().fg(if app.loading { ACCENT } else { MUTED })),
-        ]),
-        rows[5],
-    );
-    if app.help {
-        help(frame, area, app);
-    }
+    lines
 }
 
 fn help(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -717,7 +731,8 @@ fn help(frame: &mut Frame, area: Rect, app: &mut App) {
         ("Home/End g/G", "First / last item, line, or day"),
         ("PgUp/PgDn", "Page through focused pane"),
         ("←/→ or K/J", "Scroll prompt preview"),
-        ("/ or Ctrl+F", "Edit live search"),
+        ("/ or Ctrl+F", "Filter the list"),
+        ("f · n/N · F", "Find in details · jump · clear"),
         ("x", "Clear search"),
         ("t", "Cycle source (prompt history)"),
         (

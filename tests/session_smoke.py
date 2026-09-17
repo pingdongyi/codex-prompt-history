@@ -108,6 +108,19 @@ with tempfile.TemporaryDirectory() as directory:
         assert press(b'\x1b[6~')  # page down in the preview
         assert press(b'g')  # first preview line
         assert press(b'\t')  # list focus; selection is unchanged
+        press(b'fPreview line')
+        assert "1/40matches" in screen.compact()
+        assert "4/4records" in screen.compact()  # detail find does not filter the timeline
+        press(b'\r')
+        assert "2/40matches" in press(b'n')
+        assert "1/40matches" in press(b'N')
+        assert "40/40matches" in press(b'N')  # wraps
+        press(b'f\x15missing detail text')
+        assert "0/0matches" in screen.compact()
+        assert "40/40matches" in press(b'\x1b')  # cancel restores the prior find
+        press(b'F')
+        assert "Find:Previewline" not in screen.compact()
+        press(b'\t')  # return to list focus
         assert "Nomatchingsessionentries" in press(b'/no-such-text')
         press(b'\x15')  # Ctrl+U clears session search
         press(b'\r')

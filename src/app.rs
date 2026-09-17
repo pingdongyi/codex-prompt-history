@@ -54,6 +54,8 @@ pub struct App {
     pub list: ListState,
     pub query: String,
     pub searching: bool,
+    pub find: crate::detail_find::Find,
+    pub detail_revision: u64,
     pub search: crate::search::Editor,
     search_bookmark: Option<SearchBookmark>,
     pub session: Option<String>,
@@ -93,6 +95,8 @@ impl App {
             list: ListState::default(),
             query: String::new(),
             searching: false,
+            find: crate::detail_find::Find::default(),
+            detail_revision: 0,
             search: crate::search::Editor::default(),
             search_bookmark: None,
             session: None,
@@ -127,8 +131,47 @@ impl App {
         app
     }
 
+    pub fn is_editing(&self) -> bool {
+        self.searching || self.find.editing
+    }
+
+    pub fn begin_find(&mut self) {
+        if self.selected().is_none() {
+            self.status = "Select an individual record to search its details".into();
+            return;
+        }
+        if let Some(&index) = self
+            .list
+            .selected()
+            .and_then(|position| self.visible.get(position))
+            && is_tool(&self.history.entries[index])
+        {
+            self.expanded_tools.insert(index);
+        }
+        self.find.editor.history = self.search.history.clone();
+        self.find.begin(self.scroll, self.focus);
+        self.focus = Focus::Detail;
+    }
+
+    pub fn jump_detail_match(&mut self, forward: bool) {
+        if self.selected().is_none() || self.find.query.is_empty() {
+            self.status = "Press f on a record to search its details".into();
+            return;
+        }
+        if let Some(&index) = self
+            .list
+            .selected()
+            .and_then(|position| self.visible.get(position))
+            && is_tool(&self.history.entries[index])
+        {
+            self.expanded_tools.insert(index);
+        }
+        self.find.next(forward);
+        self.focus = Focus::Detail;
+    }
+
     pub fn begin_search(&mut self) {
-        if self.searching {
+        if self.is_editing() {
             return;
         }
         let selected = self
@@ -194,6 +237,7 @@ impl App {
                     self.list.select(Some(position));
                     *self.list.offset_mut() = position.saturating_sub(bookmark.row);
                     self.scroll = bookmark.scroll;
+                    self.find.preserve_scroll();
                 }
             }
             self.focus = bookmark.focus;
@@ -513,6 +557,7 @@ impl App {
             .filter_map(|r| self.history.entries.get(r.start).cloned())
             .collect();
         self.history = history;
+        self.detail_revision = self.detail_revision.wrapping_add(1);
         self.expanded_tools = self
             .history
             .entries
@@ -550,6 +595,7 @@ impl App {
             self.list.select(Some(position));
             *self.list.offset_mut() = position.saturating_sub(row);
             self.scroll = scroll;
+            self.find.preserve_scroll();
         }
     }
 

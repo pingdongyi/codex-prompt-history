@@ -65,7 +65,10 @@ Archives and `SHA256SUMS` are written to `dist/`. Verify downloads on Linux with
 | `Home` / `End`, `g` / `G` | First / last item or detail line |
 | `PgUp` / `PgDn` | Move ten list items or one page of details |
 | `←` / `→`, `K` / `J` | Scroll the full prompt |
-| `/` / `Ctrl+F` | Edit case-insensitive live search |
+| `/` / `Ctrl+F` | Edit case-insensitive list filtering |
+| `f` | Find within the selected record |
+| `n` / `N` | Next / previous detail match (wraps) |
+| `F` | Clear detail-find highlights |
 | `Enter` while searching | Confirm query and remember it |
 | `Esc` while searching | Cancel editing and restore the previous query and selection |
 | `←` / `→`, `Home` / `End` while searching | Move the search caret |
@@ -95,6 +98,16 @@ Search stays live while editing, with a visible caret and horizontal scrolling f
 Bracketed paste is enabled where supported. In search, pasted line breaks and tabs become spaces and other control characters are removed. Bracketed paste outside search is ignored so pasted characters cannot invoke commands. Existing unmodified shortcuts remain available outside search; unrecognized Ctrl/Alt combinations do not trigger ordinary character shortcuts.
 
 `?` or `F1` opens a scrollable help panel. Use arrows, Page Up/Down, or Home/End to navigate, and Esc, q, ?, or F1 to close it. The underlying view and filters stay intact.
+
+## Finding within long details
+
+`f` opens a separate find field inside the detail pane and focuses it. This searches the displayed detail text, including its metadata, without changing the list's filters or selection. A collapsed tool is expanded automatically. Select an individual record first; tool-group summary rows cannot initiate detail find.
+
+Matches use literal, case-insensitive text. `n` / `N` jumps through occurrences and wraps at the ends. All visible matches are highlighted; the active occurrence has a stronger highlight, and the pane shows its position and count. Matches can cross automatic visual wrapping, but not explicit source line breaks. Unicode matches map back to complete graphemes. Resizing keeps the active occurrence visible.
+
+The find field uses the same editing, paste, and recent-query shortcuts as list search. `Enter` confirms; `Esc` while editing restores the preceding find query and scroll position. `F`, or `Esc` while focusing details outside editing, clears detail find. `/` and `Ctrl+F` remain list filters. A tool expanded for finding remains expanded afterward.
+
+Detail layout and match positions are cached for scrolling. At most the first 10,000 occurrences are tracked; larger results are marked with `+ (first 10000)`. Use a more specific term to find later occurrences in very repetitive output.
 
 ## Activity dates
 
